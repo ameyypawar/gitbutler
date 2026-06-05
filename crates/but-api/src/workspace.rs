@@ -150,32 +150,36 @@ pub fn workspace_integrate_upstream_only_with_perm(
     perm: &mut RepoExclusive,
 ) -> anyhow::Result<WorkspaceState> {
     let mut meta = ctx.meta()?;
-    let (repo, mut ws, _) = ctx.workspace_mut_and_db_with_perm(perm)?;
-    let project_meta = ctx.project_meta()?;
-    let IntegrateUpstreamOutcome {
-        rebase,
-        ws_meta,
-        project_meta,
-    } = but_workspace::integrate_upstream(&mut ws, &mut meta, project_meta, &repo, updates)?;
+    let (repo, materialized_workspace, commit_mappings) = {
+        let (repo, mut ws, _) = ctx.workspace_mut_and_db_with_perm(perm)?;
+        let project_meta = ctx.project_meta()?;
+        let IntegrateUpstreamOutcome {
+            rebase,
+            ws_meta,
+            project_meta,
+        } = but_workspace::integrate_upstream(&mut ws, &mut meta, project_meta, &repo, updates)?;
 
-    if dry_run.into() {
-        return WorkspaceState::from_rebase_preview(&rebase, rebase.history.commit_mappings());
-    }
+        if dry_run.into() {
+            return WorkspaceState::from_rebase_preview(&rebase, rebase.history.commit_mappings());
+        }
 
-    let materialized = rebase.materialize()?;
-    project_meta.persist_to_local_config(&repo)?;
+        let materialized = rebase.materialize()?;
+        project_meta.persist_to_local_config(&repo)?;
 
-    if let Some(ref_name) = materialized.workspace.ref_name() {
-        let mut md = materialized.meta.workspace(ref_name)?;
-        *md = ws_meta;
-        md.set_project_meta(project_meta);
-        materialized.meta.set_workspace(&md)?;
-    }
+        if let Some(ref_name) = materialized.workspace.ref_name() {
+            let mut md = materialized.meta.workspace(ref_name)?;
+            *md = ws_meta;
+            md.set_project_meta(project_meta);
+            materialized.meta.set_workspace(&md)?;
+        }
+
+        (
+            repo,
+            materialized.workspace.clone(),
+            materialized.history.commit_mappings(),
+        )
+    };
     ctx.invalidate_workspace_cache()?;
 
-    WorkspaceState::from_workspace(
-        materialized.workspace,
-        &repo,
-        materialized.history.commit_mappings(),
-    )
+    WorkspaceState::from_workspace(&materialized_workspace, &repo, commit_mappings)
 }

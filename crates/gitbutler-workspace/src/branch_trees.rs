@@ -12,10 +12,10 @@ use crate::{legacy_target_base_oid, legacy_workspace_stack_heads};
 /// A snapshot of the workspace at a point in time.
 #[derive(Debug)]
 pub struct WorkspaceState {
-    /// The heads of the stacks in the workspace.
+    /// The commit ids of the stack heads in the workspace.
     heads: Vec<gix::ObjectId>,
-    /// The base of the workspace.
-    base: gix::ObjectId,
+    /// The commit id of the workspace target.
+    target: gix::ObjectId,
 }
 
 impl WorkspaceState {
@@ -23,31 +23,17 @@ impl WorkspaceState {
         let repo = ctx.repo.get()?;
         let target_base_oid = legacy_target_base_oid(ctx)?;
         let head_oids = legacy_workspace_stack_heads(ctx, &repo, target_base_oid)?;
-        Self::create_from_heads_and_target(&repo, &head_oids, target_base_oid)
+        Ok(Self::from_heads_and_target(&head_oids, target_base_oid))
     }
 
-    pub fn create_from_heads_and_target(
-        repo: &gix::Repository,
+    pub fn from_heads_and_target(
         head_oids: &[gix::ObjectId],
         target_base_oid: gix::ObjectId,
-    ) -> Result<Self> {
-        let heads = head_oids
-            .iter()
-            .map(|head| -> Result<gix::ObjectId> {
-                let commit = repo.find_commit(*head)?;
-                let tree = repo.find_real_tree(&commit, Default::default())?;
-                Ok(tree.detach())
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        // Use the target's tree directly as the merge base, matching
-        // `remerged_workspace_tree_v2`.
-        let base_tree_id = repo.find_commit(target_base_oid)?.tree_id()?.detach();
-
-        Ok(WorkspaceState {
-            heads,
-            base: base_tree_id,
-        })
+    ) -> Self {
+        WorkspaceState {
+            heads: head_oids.to_vec(),
+            target: target_base_oid,
+        }
     }
 
     pub fn create_from_heads(
@@ -55,9 +41,8 @@ impl WorkspaceState {
         _perm: &RepoShared,
         heads: &[gix::ObjectId],
     ) -> Result<Self> {
-        let repo = &*ctx.repo.get()?;
         let target_base_oid = legacy_target_base_oid(ctx)?;
-        Self::create_from_heads_and_target(repo, heads, target_base_oid)
+        Ok(Self::from_heads_and_target(heads, target_base_oid))
     }
 }
 
@@ -160,24 +145,52 @@ fn move_tree(
     Ok(merge)
 }
 
-/// Octopus merge using gix, which correctly resolves adjacent-hunk changes that git2 treats as conflicts.
-/// Takes N trees and a base tree and merges all the heads together with respect to the given base.
+/// Octopus-merge the stack heads into a single tree (via gix, so adjacent hunks
+/// that git2 would flag as conflicts merge cleanly).
 ///
-/// If there are no heads provided, the base will be returned.
+/// The result is a faithful merge of the stack heads *only* — the workspace
+/// target is never a merge input (except as the empty-workspace fallback). All
+/// heads are merged against one shared base: the octopus merge-base (lowest
+/// common ancestor) of the heads. Using a single base keeps the result
+/// independent of head order — a gradually-lowered per-iteration base instead
+/// lets a stale value from a divergent-base stack win or lose depending on
+/// ordering.
+///
+/// Seeding from the target instead of the heads would inject target-only content
+/// no stack carries, and — when a stack is based below the target — attribute the
+/// target's extra commits as deletions by that stack, silently dropping them and
+/// surfacing as phantom uncommitted changes. The same octopus is implemented in
+/// `but_workspace::legacy::remerged_workspace_tree_v2`.
+///
+/// With no heads, the target tree is returned (an empty workspace is just the target).
 pub fn merge_workspace(
     repo: &gix::Repository,
     workspace: &WorkspaceState,
 ) -> Result<gix::ObjectId> {
-    let mut output = workspace.base;
-    let base = workspace.base;
+    let real_tree = |oid: gix::ObjectId| -> Result<gix::ObjectId> {
+        let commit = repo.find_commit(oid)?;
+        Ok(repo.find_real_tree(&commit, Default::default())?.detach())
+    };
+
+    let Some((&first_head, rest)) = workspace.heads.split_first() else {
+        return real_tree(workspace.target);
+    };
+
+    // Octopus merge-base of all heads, used as the single base for every merge.
+    let mut base_commit = first_head;
+    for &head in rest {
+        base_commit = repo.merge_base(base_commit, head)?.detach();
+    }
+    let base_tree = real_tree(base_commit)?;
 
     let (merge_options, conflict_kind) = repo.merge_options_fail_fast()?;
+    let mut output = real_tree(first_head)?;
 
-    for head in &workspace.heads {
+    for &head in rest {
         let mut merge = repo.merge_trees(
-            base,
+            base_tree,
             output,
-            *head,
+            real_tree(head)?,
             repo.default_merge_labels(),
             merge_options.clone(),
         )?;

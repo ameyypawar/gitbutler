@@ -109,19 +109,30 @@ fn merge_workspace_succeeds_with_adjacent_hunks_from_both_sides() -> Result<()> 
     Ok(())
 }
 
-/// Regression test for a merge-base mismatch between `merge_workspace` and
-/// `remerged_workspace_tree_v2`.
+/// The workspace tree is a faithful octopus merge of the stack heads — the
+/// target is never a merge input. Two invariants follow, and both used to be
+/// violated (each surfacing as phantom uncommitted changes):
 ///
-/// Three stacks based on different upstream commits inherit different versions
-/// of `shared.txt` that none of them intentionally modified. The fix uses the
-/// target's tree as merge base (matching `remerged_workspace_tree_v2`), which
-/// produces a clean merge. The old behavior used `merge_base_octopus` which
-/// fell behind the target, causing false conflicts.
+/// 1. content that *is* in some head must survive, and
+/// 2. content that is in *no* head must not appear.
 ///
-/// This directly tests `WorkspaceState::create_from_heads_and_target` and
-/// `merge_workspace` — the exact code path that was fixed.
+/// `diverged-stacks` has three stacks forked at successively older upstream
+/// commits (v1 -> v2 -> v3 = target), none editing `shared.txt`, so they carry
+/// different inherited versions of it:
+///
+///   section A:  stack_a = ALPHA (v1)    stack_b = a1 (v2)     stack_c = a1 (v3)
+///   section B:  stack_a = b1 (v1)       stack_b = BRAVO (v2)  stack_c = b1 (v3)
+///
+/// Octopus-merging the heads against their shared base v1 (lowest common
+/// ancestor):
+/// - A: stack_a keeps the old `ALPHA` while b/c advanced to `a1` -> `a1` wins.
+/// - B: only stack_b changed it (to `BRAVO`) relative to v1     -> `BRAVO` wins.
+///
+/// Both are deterministic because every head merges against the *same* base v1
+/// (see `merge_workspace`); a gradually-lowered base would make B order-dependent.
+/// The original bug (target tree as the base) instead reverted A to `ALPHA`.
 #[test]
-fn merge_workspace_with_diverged_stacks() -> Result<()> {
+fn merge_workspace_merges_stack_heads_only() -> Result<()> {
     let (ctx, _temp_dir) = command_ctx("diverged-stacks")?;
 
     let repo = ctx.repo.get()?;
@@ -131,20 +142,114 @@ fn merge_workspace_with_diverged_stacks() -> Result<()> {
         .map(|name| repo.rev_parse_single(*name).map(|id| id.detach()))
         .collect::<Result<_, _>>()?;
 
-    // Build WorkspaceState from the stack heads and target — this is exactly
-    // what `integrate_upstream` does before calling `merge_workspace`.
-    let workspace =
-        gitbutler_workspace::branch_trees::WorkspaceState::create_from_heads_and_target(
-            &repo, &head_oids, target_oid,
-        )?;
+    let workspace = gitbutler_workspace::branch_trees::WorkspaceState::from_heads_and_target(
+        &head_oids, target_oid,
+    );
 
-    // With the fix (target tree as base), this merges cleanly because each
-    // stack's inherited shared.txt differs in a different section.
-    // With the old code (octopus base = init), this would fail because all
-    // stacks replace "base content" with different multi-line content.
     let gix_repo = ctx.clone_repo_for_merging()?;
-    gitbutler_workspace::branch_trees::merge_workspace(&gix_repo, &workspace)
-        .expect("workspace should merge cleanly with target tree as base");
+    let merged_tree_id = gitbutler_workspace::branch_trees::merge_workspace(&gix_repo, &workspace)
+        .expect("stack heads should octopus-merge cleanly");
+
+    let merged_tree = gix_repo.find_tree(merged_tree_id)?;
+    assert_stack_heads_merged(&merged_tree)?;
+
+    Ok(())
+}
+
+/// Invariant 2: a target-only file (here `new_upstream.txt`, which only exists
+/// in `upstream-target`/v4, ahead of every stack) must NOT leak into the
+/// workspace tree. Seeding the merge from the target would inject it even though
+/// no applied stack carries it.
+#[test]
+fn merge_workspace_excludes_target_only_content() -> Result<()> {
+    let (ctx, _temp_dir) = command_ctx("diverged-stacks")?;
+
+    let repo = ctx.repo.get()?;
+    // A target ahead of all stacks: v4 adds new_upstream.txt that no stack has.
+    let target_oid = repo.rev_parse_single("upstream-target")?.detach();
+    let head_oids: Vec<gix::ObjectId> = ["stack_a", "stack_b", "stack_c"]
+        .iter()
+        .map(|name| repo.rev_parse_single(*name).map(|id| id.detach()))
+        .collect::<Result<_, _>>()?;
+
+    let workspace = gitbutler_workspace::branch_trees::WorkspaceState::from_heads_and_target(
+        &head_oids, target_oid,
+    );
+
+    let gix_repo = ctx.clone_repo_for_merging()?;
+    let merged_tree_id = gitbutler_workspace::branch_trees::merge_workspace(&gix_repo, &workspace)
+        .expect("stack heads should octopus-merge cleanly");
+
+    let merged_tree = gix_repo.find_tree(merged_tree_id)?;
+    for path in ["file_a.txt", "file_b.txt", "file_c.txt"] {
+        assert!(
+            merged_tree.lookup_entry_by_path(path)?.is_some(),
+            "{path} should be in merged workspace tree"
+        );
+    }
+    assert!(
+        merged_tree
+            .lookup_entry_by_path("new_upstream.txt")?
+            .is_none(),
+        "target-only file must not leak into a workspace tree built from stack heads"
+    );
+
+    Ok(())
+}
+
+/// Same invariants as `merge_workspace_merges_stack_heads_only`, but end-to-end
+/// through `update_workspace_commit` -> `remerged_workspace_tree_v2`, asserting
+/// on the actual `gitbutler/workspace` HEAD tree.
+#[test]
+fn update_workspace_commit_merges_stack_heads_only() -> Result<()> {
+    let (ctx, _temp_dir) = command_ctx("diverged-stacks")?;
+
+    gitbutler_branch_actions::update_workspace_commit(&ctx, false)?;
+
+    let repo = ctx.repo.get()?;
+    let ws_tree = repo
+        .find_reference("refs/heads/gitbutler/workspace")?
+        .into_fully_peeled_id()?
+        .object()?
+        .try_into_commit()?
+        .tree()?;
+
+    assert_stack_heads_merged(&ws_tree)?;
+
+    Ok(())
+}
+
+/// Assert the merged `diverged-stacks` tree is the octopus of the three stack
+/// heads against their shared base v1: every stack's file present, section A
+/// advanced to `a1` (old stack_a's `ALPHA` did not win), section B is stack_b's
+/// `BRAVO` (the only head that changed it relative to the base).
+///
+/// Both section assertions are deterministic because all heads merge against the
+/// same base (the octopus merge-base) — a per-iteration base would make B depend
+/// on stack order. Section A also guards the original bug (target tree as the
+/// base reverted A to `ALPHA`).
+fn assert_stack_heads_merged(tree: &gix::Tree<'_>) -> Result<()> {
+    for path in ["file_a.txt", "file_b.txt", "file_c.txt"] {
+        assert!(
+            tree.clone().lookup_entry_by_path(path)?.is_some(),
+            "{path} should be in merged workspace tree"
+        );
+    }
+
+    let shared = tree
+        .clone()
+        .lookup_entry_by_path("shared.txt")?
+        .expect("shared.txt should exist")
+        .object()?;
+    let contents = std::str::from_utf8(&shared.data)?;
+    assert!(
+        contents.contains("line a1") && !contents.contains("ALPHA"),
+        "section A should advance to a1 (old stack must not revert it), got:\n{contents}"
+    );
+    assert!(
+        contents.contains("BRAVO ONE"),
+        "section B should deterministically be stack_b's BRAVO (single octopus base), got:\n{contents}"
+    );
 
     Ok(())
 }

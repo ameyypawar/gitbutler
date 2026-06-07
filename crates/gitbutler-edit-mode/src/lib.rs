@@ -297,8 +297,7 @@ pub(crate) fn save_and_return_to_workspace(ctx: &Context, perm: &mut RepoExclusi
         .iter()
         .map(|stack| stack.tip_skip_empty().unwrap_or(old_target_base_oid))
         .collect::<Vec<_>>();
-    let old_workspace =
-        WorkspaceState::create_from_heads_and_target(repo, &old_head_oids, old_target_base_oid)?;
+    let old_workspace = WorkspaceState::from_heads_and_target(&old_head_oids, old_target_base_oid);
 
     let head_commit = repo.head_commit()?;
     let decoded_head_commit = head_commit.decode()?;

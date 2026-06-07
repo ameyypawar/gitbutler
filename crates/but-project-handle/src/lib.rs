@@ -19,6 +19,7 @@ pub use legacy_project_id::LegacyProjectId;
 
 pub use project_handle::{ProjectHandle, ProjectHandleOrLegacyProjectId};
 pub use storage_path::{
-    gitbutler_storage_path, gitbutler_storage_path_for_channel, storage_path_config_key,
+    DEFAULT_STORAGE_DIR_NAME, REFRESH_SENTINEL_PATH, gitbutler_storage_path,
+    gitbutler_storage_path_for_channel, storage_path_config_key,
     storage_path_config_key_for_app_channel,
 };

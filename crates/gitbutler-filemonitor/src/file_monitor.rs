@@ -596,6 +596,17 @@ pub const HEAD: &str = "HEAD";
 pub const HEAD_ACTIVITY: &str = "logs/HEAD";
 pub const INDEX: &str = "index";
 pub const GB_FLUSH: &str = "GB_FLUSH";
+/// Sentinel file (git-dir-relative) that GitButler writers touch after
+/// persisting branch metadata (see `gitbutler_stack`'s `touch_refresh_sentinel`).
+/// Watching this single file — rather than the metadata store itself — keeps the
+/// refresh signal decoupled from the storage backend (TOML today, SQLite
+/// tomorrow), and avoids a SQLite WAL that wouldn't reliably touch the main db
+/// file. Shares its definition with the writer via `but_project_handle`.
+///
+/// Note: a custom `gitbutler.storagePath` would put the sentinel elsewhere and
+/// this watch would miss it; the UI then falls back to its other refresh
+/// signals (remote-ref activity, in-process tag invalidation).
+pub const REFRESH_SENTINEL: &str = but_project_handle::REFRESH_SENTINEL_PATH;
 
 /// A classification for a changed file.
 #[derive(Debug, Eq, PartialEq)]
@@ -617,6 +628,7 @@ fn classify_file(git_dir: &Path, file_path: &Path) -> FileKind {
             || check_file_path == Path::new(HEAD)
             || check_file_path == Path::new(GB_FLUSH)
             || check_file_path == Path::new(INDEX)
+            || check_file_path == Path::new(REFRESH_SENTINEL)
             || check_file_path.starts_with(LOCAL_REFS_DIR)
             || check_file_path.starts_with(REMOTE_REFS_DIR)
         {
@@ -686,6 +698,28 @@ mod tests {
         assert_eq!(
             classify_file(git_dir(), Path::new("/repo/src/main.rs")),
             FileKind::Project
+        );
+    }
+
+    #[test]
+    fn classify_refresh_sentinel() {
+        assert_eq!(
+            classify_file(git_dir(), Path::new("/repo/.git/gitbutler/REFRESH")),
+            FileKind::Git
+        );
+    }
+
+    #[test]
+    fn classify_metadata_store_as_uninteresting() {
+        // The metadata store itself is deliberately NOT watched — only the
+        // REFRESH sentinel is. This guards against re-coupling the refresh
+        // signal to the storage backend (TOML/SQLite).
+        assert_eq!(
+            classify_file(
+                git_dir(),
+                Path::new("/repo/.git/gitbutler/virtual_branches.toml")
+            ),
+            FileKind::GitUninteresting
         );
     }
 }

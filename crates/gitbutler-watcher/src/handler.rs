@@ -8,7 +8,8 @@ use but_hunk_assignment::HunkAssignment;
 use but_hunk_dependency::ui::hunk_dependencies_for_workspace_changes_by_worktree_dir;
 use but_settings::{AppSettings, AppSettingsWithDiskSync};
 use gitbutler_filemonitor::{
-    FETCH_HEAD, HEAD, HEAD_ACTIVITY, INDEX, InternalEvent, LOCAL_REFS_DIR, REMOTE_REFS_DIR,
+    FETCH_HEAD, HEAD, HEAD_ACTIVITY, INDEX, InternalEvent, LOCAL_REFS_DIR, REFRESH_SENTINEL,
+    REMOTE_REFS_DIR,
 };
 use gitbutler_operating_modes::operating_mode;
 use gix::bstr::ByteSlice as _;
@@ -171,7 +172,7 @@ impl Handler {
         perm: &mut RepoExclusive,
     ) -> Result<()> {
         let (head_ref_name, head_sha) = head_info(ctx)?;
-        let mut saw_remote_activity = false;
+        let mut saw_workspace_activity = false;
         for path in paths {
             let Some(file_name) = path.to_str() else {
                 continue;
@@ -187,9 +188,15 @@ impl Handler {
                         head_sha: head_sha.clone(),
                     })?;
                 }
-                // Track remote ref changes to emit a single event after the loop.
+                // Remote-ref updates and the metadata refresh-sentinel both mean
+                // "re-read workspace state". Coalesce into one workspace-activity
+                // emission after the loop so a batch touching both signals
+                // doesn't double-invalidate the UI.
                 _ if file_name.starts_with(REMOTE_REFS_DIR) => {
-                    saw_remote_activity = true;
+                    saw_workspace_activity = true;
+                }
+                REFRESH_SENTINEL => {
+                    saw_workspace_activity = true;
                 }
                 HEAD_ACTIVITY => {
                     self.emit_app_event(Change::GitActivity {
@@ -214,8 +221,8 @@ impl Handler {
                 _ => { /* Ignore other files */ }
             }
         }
-        if saw_remote_activity {
-            self.emit_app_event(Change::GitRemoteActivity { project_id })?;
+        if saw_workspace_activity {
+            self.emit_app_event(Change::WorkspaceActivity { project_id })?;
         }
         Ok(())
     }

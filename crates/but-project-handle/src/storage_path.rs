@@ -110,8 +110,20 @@ fn validate_in_git_storage_path(
     Ok(())
 }
 
+/// Name of the default GitButler storage directory inside the git dir.
+pub const DEFAULT_STORAGE_DIR_NAME: &str = "gitbutler";
+
+/// Git-dir-relative path of the refresh sentinel in the default storage
+/// location, i.e. `gitbutler/REFRESH`.
+///
+/// Single source of truth for the sentinel shared by the writer
+/// (`gitbutler_stack`, which touches a `REFRESH` file in the project's actual
+/// — possibly configured — storage dir) and the watcher
+/// (`gitbutler_filemonitor`, which watches this default path).
+pub const REFRESH_SENTINEL_PATH: &str = "gitbutler/REFRESH";
+
 fn default_gitbutler_storage_dir_name() -> &'static str {
-    "gitbutler"
+    DEFAULT_STORAGE_DIR_NAME
 }
 
 fn storage_path_config_key_for_channel(channel: &AppChannel) -> &'static str {

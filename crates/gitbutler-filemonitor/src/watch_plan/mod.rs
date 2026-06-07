@@ -127,6 +127,15 @@ fn emit_git_dir_watches(
     {
         return Ok(ControlFlow::Break(()));
     }
+    // Watch the default GitButler storage dir so that external writes to the
+    // refresh sentinel (e.g. by the `but` CLI) are surfaced to the UI. A custom
+    // `gitbutler.storagePath` would put the storage elsewhere and isn't watched
+    // here; the UI then relies on its other refresh signals.
+    let gitbutler_dir = git_dir.join("gitbutler");
+    if gitbutler_dir.is_dir() && visit_dir(&gitbutler_dir, RecursiveMode::NonRecursive)?.is_break()
+    {
+        return Ok(ControlFlow::Break(()));
+    }
     Ok(ControlFlow::Continue(()))
 }
 

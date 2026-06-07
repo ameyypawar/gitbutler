@@ -18,6 +18,28 @@ use crate::{
 const LAST_PUSHED_BASE_VERSION_HEADER: &str = "base-commit-version";
 const LAST_PUSHED_BASE_VERSION: &str = "1";
 
+/// Best-effort touch of the refresh sentinel next to `metadata_file`.
+///
+/// This is how the desktop app learns about branch metadata written by another
+/// process (notably the `but` CLI creating a PR) without polling the forge:
+/// the writer touches one tiny file, decoupled from the metadata's storage
+/// backend (TOML today, SQLite tomorrow). The filename comes from the shared
+/// [`but_project_handle::REFRESH_SENTINEL_PATH`] so it can't drift from what the
+/// file monitor watches. A failure here must never fail the surrounding
+/// mutation, so errors are logged and swallowed.
+fn touch_refresh_sentinel(metadata_file: &Path) {
+    let Some(dir) = metadata_file.parent() else {
+        return;
+    };
+    let Some(filename) = Path::new(but_project_handle::REFRESH_SENTINEL_PATH).file_name() else {
+        return;
+    };
+    let sentinel = dir.join(filename);
+    if let Err(err) = std::fs::write(&sentinel, []) {
+        tracing::warn!(?sentinel, %err, "failed to touch refresh sentinel");
+    }
+}
+
 /// The state of virtual branches data, as persisted in a TOML file.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct VirtualBranches {
@@ -247,7 +269,9 @@ impl VirtualBranchesHandle {
     pub fn write_file(&mut self, virtual_branches: &VirtualBranches) -> Result<()> {
         let _ = self.ensure_vb_storage_in_sync()?;
         let legacy = virtual_branches_legacy_types::VirtualBranches::from(virtual_branches.clone());
-        but_meta::legacy_storage::write_virtual_branches_and_sync(&self.file_path, &legacy)
+        but_meta::legacy_storage::write_virtual_branches_and_sync(&self.file_path, &legacy)?;
+        touch_refresh_sentinel(&self.file_path);
+        Ok(())
     }
 
     /// Ensure TOML and DB are synchronized before proceeding with metadata operations.

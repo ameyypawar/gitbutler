@@ -4207,6 +4207,7 @@ dependencies = [
  "but-db",
  "but-error",
  "but-meta",
+ "but-project-handle",
  "but-rebase",
  "but-testsupport",
  "ctor 0.6.3",
@@ -4220,6 +4221,7 @@ dependencies = [
  "serde",
  "tempfile",
  "toml 0.9.12+spec-1.1.0",
+ "tracing",
 ]
 
 [[package]]

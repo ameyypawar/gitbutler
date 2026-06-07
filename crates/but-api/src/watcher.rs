@@ -17,10 +17,13 @@ pub enum WatcherPayload {
     GitHead(WatcherGitHeadPayload),
     /// Git HEAD changed or there were changes to ref files.
     GitActivity(WatcherGitActivityPayload),
-    /// Remote tracking refs changed (e.g. after a push).
-    GitRemoteActivity(WatcherGitRemoteActivityPayload),
     /// There were changes in the files inside of the repository.
     WorktreeChanges(WatcherWorktreeChangesPayload),
+    /// External activity that requires re-reading workspace state (stacks,
+    /// branches, PR numbers). Fired for remote-ref updates (push, external
+    /// fetch) and for external writes to `virtual_branches.toml` (e.g. by
+    /// the `but` CLI).
+    WorkspaceActivity(WatcherWorkspaceActivityPayload),
 }
 
 #[cfg(feature = "export-schema")]
@@ -58,13 +61,13 @@ pub struct WatcherGitActivityPayload {
 #[cfg(feature = "export-schema")]
 but_schemars::register_sdk_type!(WatcherGitActivityPayload);
 
-/// Remote tracking refs changed (e.g. after a push or external git operation).
+/// Workspace activity that requires the UI to re-read branch/stack state.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct WatcherGitRemoteActivityPayload;
+pub struct WatcherWorkspaceActivityPayload;
 
 #[cfg(feature = "export-schema")]
-but_schemars::register_sdk_type!(WatcherGitRemoteActivityPayload);
+but_schemars::register_sdk_type!(WatcherWorkspaceActivityPayload);
 
 /// Worktree files changes.
 #[derive(Debug, Clone, Serialize, JsonSchema)]

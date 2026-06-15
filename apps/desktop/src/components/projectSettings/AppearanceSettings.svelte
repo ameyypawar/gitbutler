@@ -1,6 +1,7 @@
 <script lang="ts">
 	import ThemeSelector from "$components/projectSettings/ThemeSelector.svelte";
 	import { UI_STATE } from "$lib/state/uiState.svelte";
+	import { MIN_ZOOM, MAX_ZOOM, percentToZoom, setZoom, zoomToPercent } from "$lib/zoom";
 	import { inject } from "@gitbutler/core/context";
 	import {
 		CardGroup,
@@ -31,6 +32,7 @@
 	const svgAsImage = uiState.global.svgAsImage;
 	const scrollbarVisibilityState = uiState.global.scrollbarVisibilityState;
 	const defaultFileListMode = uiState.global.defaultFileListMode;
+	const zoom = uiState.global.zoom;
 
 	// Sync persisted syntax theme settings to the shiki highlighter.
 	$effect(() => {
@@ -64,6 +66,32 @@
 		Theme
 	{/snippet}
 	<ThemeSelector {uiState} />
+</CardGroup.Item>
+
+<CardGroup.Item alignment="center" standalone>
+	{#snippet title()}
+		Interface zoom
+	{/snippet}
+	{#snippet caption()}
+		Scale the entire interface up or down. Also adjustable with the zoom in/out keyboard shortcuts.
+	{/snippet}
+	{#snippet actions()}
+		<Textbox
+			type="number"
+			width={100}
+			textAlign="center"
+			value={zoomToPercent(zoom.current).toString()}
+			minVal={zoomToPercent(MIN_ZOOM)}
+			maxVal={zoomToPercent(MAX_ZOOM)}
+			showCountActions
+			onchange={(value: string) => {
+				const percent = parseInt(value);
+				if (Number.isNaN(percent)) return;
+				setZoom(zoom, percentToZoom(percent));
+			}}
+			placeholder={zoomToPercent(zoom.current).toString()}
+		/>
+	{/snippet}
 </CardGroup.Item>
 
 <CardGroup.Item alignment="center" standalone>

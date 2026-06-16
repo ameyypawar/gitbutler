@@ -75,6 +75,22 @@ impl LLMProviderKind {
             LLMProviderKind::OpenRouter => "OpenRouter",
         }
     }
+
+    /// The model to use when the user has not configured one explicitly.
+    ///
+    /// Most providers keep OpenAI's small model as the historical default.
+    /// Anthropic gets an Anthropic default so the GitButler-proxied path (which
+    /// carries no model name) targets a model the provider actually serves,
+    /// rather than an OpenAI model it would reject with a 404.
+    pub fn default_model(&self) -> &'static str {
+        match self {
+            LLMProviderKind::Anthropic => "claude-haiku-4-5",
+            LLMProviderKind::OpenAi
+            | LLMProviderKind::Ollama
+            | LLMProviderKind::LMStudio
+            | LLMProviderKind::OpenRouter => "gpt-5-mini",
+        }
+    }
 }
 
 impl From<LLMProviderKind> for String {
@@ -236,6 +252,27 @@ impl LLMProvider {
             LLMClientType::LMStudio(client) => client.model(),
             LLMClientType::OpenRouter(client) => client.model(),
         }
+    }
+
+    /// Returns the [`LLMProviderKind`] this provider is backed by.
+    pub fn kind(&self) -> LLMProviderKind {
+        match &self.client {
+            LLMClientType::OpenAi(_) => LLMProviderKind::OpenAi,
+            LLMClientType::Anthropic(_) => LLMProviderKind::Anthropic,
+            LLMClientType::Ollama(_) => LLMProviderKind::Ollama,
+            LLMClientType::LMStudio(_) => LLMProviderKind::LMStudio,
+            LLMClientType::OpenRouter(_) => LLMProviderKind::OpenRouter,
+        }
+    }
+
+    /// Returns the configured model, or this provider's default when none is set.
+    ///
+    /// Prefer this over [`LLMProvider::model`] when a model name is required, so
+    /// requests target a model the configured provider actually serves instead
+    /// of relying on a hardcoded literal.
+    pub fn model_or_default(&self) -> String {
+        self.model()
+            .unwrap_or_else(|| self.kind().default_model().to_string())
     }
 
     /// Creates a default OpenAI LLM provider using environment-based credentials.
@@ -543,5 +580,35 @@ impl LLMProvider {
                 client.response(system_message, chat_messages, model)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anthropic_defaults_to_an_anthropic_model() {
+        assert_eq!(
+            LLMProviderKind::Anthropic.default_model(),
+            "claude-haiku-4-5"
+        );
+    }
+
+    #[test]
+    fn other_providers_default_to_the_openai_small_model() {
+        assert_eq!(LLMProviderKind::OpenAi.default_model(), "gpt-5-mini");
+        assert_eq!(LLMProviderKind::Ollama.default_model(), "gpt-5-mini");
+        assert_eq!(LLMProviderKind::OpenRouter.default_model(), "gpt-5-mini");
+    }
+
+    #[test]
+    fn model_or_default_falls_back_to_the_provider_default() {
+        // Ollama needs no credentials and carries no model unless configured.
+        let llm = LLMProvider::new(LLMProviderConfig::Ollama(None))
+            .expect("ollama provider requires no credentials");
+        assert_eq!(llm.model(), None);
+        assert_eq!(llm.kind().default_model(), "gpt-5-mini");
+        assert_eq!(llm.model_or_default(), "gpt-5-mini");
     }
 }

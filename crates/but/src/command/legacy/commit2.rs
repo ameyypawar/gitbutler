@@ -104,37 +104,44 @@ pub fn commit(
     let perm = guard.write_permission();
     let mut meta = ctx.meta()?;
 
-    let (commit_op, reword_op) = {
+    let (commit_op, commit_selection, reword_op) = {
         let head_info = but_api::legacy::workspace::head_info(ctx)?;
         let repo = ctx.repo.get()?;
         resolve(&repo, args, &head_info)?
     };
-    run(ctx, &mut meta, perm, commit_op, reword_op)
+    run(ctx, &mut meta, perm, commit_op, commit_selection, reword_op)
 }
 
 fn resolve(
     repo: &gix::Repository,
     args: Platform,
     head_info: &RefInfo,
-) -> CliResult<(CommitOperation, RewordCommitOperation)> {
+) -> CliResult<(CommitOperation, CommitSelection, RewordCommitOperation)> {
     let Platform {
         no_message,
         message,
         branch,
+        empty,
     } = args;
 
     let commit_op = route_commit_operation(repo, head_info, branch)?;
 
+    let commit_selection = if empty {
+        CommitSelection::Nothing
+    } else {
+        CommitSelection::AllChanges
+    };
+
     let reword_op = match (no_message, message) {
         (true, None) => RewordCommitOperation::NoMessage,
         (false, None) => RewordCommitOperation::UseEditor,
-        (false, Some(message)) => RewordCommitOperation::Message(message),
+        (false, Some(message)) => RewordCommitOperation::Message(message.join("\n\n")),
         (true, Some(_)) => {
             unreachable!("--no-message and --message are mutually exclusive")
         }
     };
 
-    Ok((commit_op, reword_op))
+    Ok((commit_op, commit_selection, reword_op))
 }
 
 fn run(
@@ -142,17 +149,20 @@ fn run(
     meta: &mut impl RefMetadata,
     perm: &mut RepoExclusive,
     commit_op: CommitOperation,
+    commit_selection: CommitSelection,
     reword_op: RewordCommitOperation,
 ) -> CliResult<CommitOutcome> {
-    let changes = {
-        let context_lines = ctx.settings.context_lines;
-        let (repo, ws, mut db) = ctx.workspace_mut_and_db_mut_with_perm(perm)?;
+    let changes = match commit_selection {
+        CommitSelection::AllChanges => {
+            let context_lines = ctx.settings.context_lines;
+            let (repo, ws, mut db) = ctx.workspace_mut_and_db_mut_with_perm(perm)?;
 
-        let mut builder = DiffSpecBuilder::new(&mut db, &repo, &ws, context_lines);
-        builder.push_changes_from_unassigned(&UNASSIGNED.to_string())?;
-        builder.into_diff_specs()
+            let mut builder = DiffSpecBuilder::new(&mut db, &repo, &ws, context_lines);
+            builder.push_changes_from_unassigned(&UNASSIGNED.to_string())?;
+            builder.into_diff_specs()
+        }
+        CommitSelection::Nothing => vec![],
     };
-
     let snapshot_details = SnapshotDetails::new(OperationKind::CreateCommit);
     let result = but_transaction::with_transaction_with_perm(
         ctx,
@@ -207,31 +217,39 @@ fn run(
 fn route_commit_operation(
     repo: &gix::Repository,
     head_info: &RefInfo,
-    branch: Option<BranchArg>,
+    branch: Option<Option<BranchArg>>,
 ) -> CliResult<CommitOperation> {
-    if let Some(branch) = branch {
-        if let Some(segment) = branch.try_resolve_segment(head_info)? {
-            let ref_info = segment.ref_info.with_context(|| {
-                format!("BUG: Segment resolved from branch name {branch} has no ref info")
-            })?;
+    match branch {
+        Some(Some(branch)) => {
+            if let Some(segment) = branch.try_resolve_segment(head_info)? {
+                let ref_info = segment.ref_info.with_context(|| {
+                    format!("BUG: Segment resolved from branch name {branch} has no ref info")
+                })?;
 
-            return Ok(CommitOperation::CommitToExistingBranch(
-                CommitToExistingBranchOperation {
-                    branch_name: ref_info.ref_name,
-                },
-            ));
-        } else {
-            let branch_name = BranchArg(branch.resolve_for_creation(repo, head_info).hint(
-                format!("Run `but apply {branch}` to apply the branch first"),
-            )?)
-            .resolve_local_branch_name()?;
+                return Ok(CommitOperation::CommitToExistingBranch(
+                    CommitToExistingBranchOperation {
+                        branch_name: ref_info.ref_name,
+                    },
+                ));
+            } else {
+                let branch_name = BranchArg(branch.resolve_for_creation(repo, head_info).hint(
+                    format!("Run `but apply {branch}` to apply the branch first"),
+                )?)
+                .resolve_local_branch_name()?;
+                return Ok(CommitOperation::CommitToNewBranch(
+                    CommitToNewBranchOperation {
+                        branch_name: Some(branch_name),
+                    },
+                ));
+            }
+        }
+        Some(None) => {
             return Ok(CommitOperation::CommitToNewBranch(
-                CommitToNewBranchOperation {
-                    branch_name: Some(branch_name),
-                },
+                CommitToNewBranchOperation { branch_name: None },
             ));
         }
-    }
+        None => (),
+    };
 
     let mut stacks = head_info.stacks.iter();
     if let Some(stack) = stacks.next() {
@@ -255,6 +273,11 @@ fn route_commit_operation(
     Ok(CommitOperation::CommitToNewBranch(
         CommitToNewBranchOperation { branch_name: None },
     ))
+}
+
+enum CommitSelection {
+    AllChanges,
+    Nothing,
 }
 
 enum CommitOperation {

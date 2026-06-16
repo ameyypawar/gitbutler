@@ -4,7 +4,14 @@ import {
 	listBranchesQueryOptions,
 	listProjectsQueryOptions,
 } from "#ui/api/queries.ts";
-import { useApplyBranch, useRebaseAllStacks, useRestoreSnapshot } from "#ui/api/mutations.ts";
+import {
+	useApplyBranch,
+	useBranchCheckoutNew,
+	useBranchCreate,
+	useWorkspaceIntegrateUpstream,
+	useRestoreSnapshot,
+} from "#ui/api/mutations.ts";
+import { findBranchOperandByRef } from "#ui/api/ref-info.ts";
 import {
 	focusAdjacentSelectionScope,
 	focusSelectionScope,
@@ -22,9 +29,9 @@ import {
 import { getButtonClassName } from "#ui/components/Button.tsx";
 import { Kbd } from "#ui/components/Kbd.tsx";
 import { globalHotkeys, workspaceHotkeys, type CommandGroup } from "#ui/hotkeys.ts";
-import { stackToBottomRebaseUpdate } from "#ui/api/stack.ts";
+import { stackBottomRelativeTo } from "#ui/api/stack.ts";
 import { type AppThunk, useAppDispatch, useAppSelector } from "#ui/store.ts";
-import { BranchListing, RefInfo, Segment, Stack } from "@gitbutler/but-sdk";
+import { BottomUpdate, BranchListing, RefInfo, Segment, Stack } from "@gitbutler/but-sdk";
 import {
 	getHotkeyManager,
 	getSequenceManager,
@@ -49,6 +56,8 @@ import {
 	changesSectionOperand,
 	commitOperand,
 	Operand,
+	operandContains,
+	operandEquals,
 	operandIdentityKey,
 	stackOperand,
 	type BranchOperand,
@@ -62,8 +71,9 @@ import { useActiveElement } from "#ui/focus.ts";
 import { classes } from "#ui/components/classes.ts";
 import { Icon } from "#ui/components/Icon.tsx";
 import { TooltipPopup } from "#ui/components/Tooltip.tsx";
-import { filterNavigationItemsForOutlineMode } from "#ui/outline/mode.ts";
-import { buildNavigationIndex } from "#ui/workspace/navigation-index.ts";
+import { buildIndexByKey, NavigationIndex } from "#ui/workspace/navigation-index.ts";
+import { reverse } from "effect/Array";
+import { getOperations } from "#ui/operations/operation.ts";
 
 const toggleFiles =
 	({
@@ -344,16 +354,6 @@ const useWorkspaceHotkeys = (projectId: string) => {
 			},
 		},
 		{
-			hotkey: workspaceHotkeys.applyBranch.hotkey,
-			callback: () => {
-				dispatch(projectActions.openApplyBranchPicker({ projectId }));
-			},
-			options: {
-				conflictBehavior: "allow",
-				meta: workspaceHotkeys.applyBranch.meta,
-			},
-		},
-		{
 			hotkey: workspaceHotkeys.toggleFiles.hotkey,
 			callback: () => {
 				dispatch(toggleFiles({ projectId, focusedSelectionScope, outlineVisible }));
@@ -414,15 +414,20 @@ const outlineNavigationItems = (headInfo: RefInfo | undefined): Array<Operand> =
 	return [
 		changesSectionOperand,
 
-		...(headInfo?.stacks.flatMap((stack) => {
+		...reverse(headInfo?.stacks ?? []).flatMap((stack) => {
 			// oxlint-disable-next-line typescript/no-non-null-assertion -- [ref:stack-id-required]
 			const stackId = stack.id!;
 			return [
 				stackOperand({ stackId }),
 				...stack.segments.flatMap((segment) => segmentItems(stackId, segment)),
 			];
-		}) ?? []),
+		}),
 	];
+};
+
+const hasAnyOperation = (source: Operand, target: Operand) => {
+	const operations = getOperations(source, target);
+	return !!operations.into || !!operations.above || !!operations.below;
 };
 
 const useOutlineNavigationIndex = ({
@@ -431,20 +436,36 @@ const useOutlineNavigationIndex = ({
 }: {
 	projectId: string;
 	absorptionTargetKeys: ReadonlySet<string>;
-}) => {
+}): NavigationIndex<Operand> => {
 	const { data: headInfo } = useQuery(headInfoQueryOptions(projectId));
 
 	const outlineMode = useAppSelector((state) => selectProjectOutlineModeState(state, projectId));
 
 	const items = outlineNavigationItems(headInfo);
-	const filteredItems = filterNavigationItemsForOutlineMode({
-		items,
-		outlineMode,
-		absorptionTargetKeys,
-	});
-	const navigationIndex = buildNavigationIndex(filteredItems, operandIdentityKey);
+	const filteredItems = Match.value(outlineMode).pipe(
+		Match.tagsExhaustive({
+			Default: () => items,
+			Absorb: (activeMode) =>
+				items.filter(
+					(operand) =>
+						operandContains(operand, activeMode.source) ||
+						absorptionTargetKeys.has(operandIdentityKey(operand)),
+				),
+			Transfer: (activeMode) =>
+				items.filter(
+					(operand) =>
+						operandContains(operand, activeMode.value.source) ||
+						hasAnyOperation(activeMode.value.source, operand),
+				),
+			RenameBranch: (x) =>
+				items.filter((operand) => operandEquals(operand, branchOperand(x.operand))),
+			RewordCommit: (x) =>
+				items.filter((operand) => operandEquals(operand, commitOperand(x.operand))),
+		}),
+	);
+	const indexByKey = buildIndexByKey(filteredItems, operandIdentityKey);
 
-	return navigationIndex;
+	return { items: filteredItems, indexByKey };
 };
 
 const WorkspacePage: FC = () => {
@@ -489,15 +510,53 @@ const WorkspacePage: FC = () => {
 		dispatch(projectActions.openApplyBranchPicker({ projectId }));
 	};
 
+	const branchCreateMutation = useBranchCreate();
+	const branchCheckoutNewMutation = useBranchCheckoutNew();
+	const createIndependentBranch = () => {
+		branchCreateMutation.mutate(
+			{
+				projectId,
+				newRef: null,
+				placement: { type: "independent" },
+			},
+			{
+				onSuccess: (response) => {
+					const newBranch = findBranchOperandByRef({
+						headInfo: response.workspace.headInfo,
+						branchRef: response.newRef.fullNameBytes,
+					});
+					if (newBranch) selectBranch(newBranch);
+				},
+			},
+		);
+	};
+	const resetWorkspace = () => {
+		branchCheckoutNewMutation.mutate(
+			{ projectId, name: null },
+			{
+				onSuccess: (response) => {
+					const workspaceRef = response.workspace.headInfo.workspaceRef;
+					if (!workspaceRef) return;
+
+					const newBranch = findBranchOperandByRef({
+						headInfo: response.workspace.headInfo,
+						branchRef: workspaceRef.fullNameBytes,
+					});
+					if (newBranch) selectBranch(newBranch);
+				},
+			},
+		);
+	};
+
 	const { data: headInfo } = useQuery(headInfoQueryOptions(projectId));
 	const rebaseUpdates =
-		headInfo?.stacks.flatMap((stack) => {
-			const update = stackToBottomRebaseUpdate(stack);
-			return update ? [update] : [];
+		headInfo?.stacks.flatMap((stack): Array<BottomUpdate> => {
+			const relativeTo = stackBottomRelativeTo(stack);
+			return relativeTo ? [{ kind: "rebase", selector: relativeTo }] : [];
 		}) ?? [];
-	const rebaseAllStacksMutation = useRebaseAllStacks({ projectId });
-	const rebaseAllStacks = () => {
-		rebaseAllStacksMutation.mutate(rebaseUpdates);
+	const workspaceIntegrateUpstreamMutation = useWorkspaceIntegrateUpstream({ projectId });
+	const updateWorkspace = () => {
+		workspaceIntegrateUpstreamMutation.mutate(rebaseUpdates);
 	};
 	const toggleDetailsFullscreen = () => {
 		if (
@@ -511,19 +570,46 @@ const WorkspacePage: FC = () => {
 	// This should be false if all stacks are up-to-date, but we're currently
 	// lacking this information:
 	// https://linear.app/gitbutler/issue/GB-1560/add-information-about-the-relation-to-the-upstream-to-the-head-info
-	const canRebaseAllStacks =
+	const canUpdateWorkspace =
 		outlineMode._tag === "Default" &&
 		rebaseUpdates.length > 0 &&
-		!rebaseAllStacksMutation.isPending;
+		!workspaceIntegrateUpstreamMutation.isPending;
+
+	const canCreateIndependentBranch =
+		outlineMode._tag === "Default" && !branchCreateMutation.isPending;
+
+	const canResetWorkspace = outlineMode._tag === "Default" && !branchCheckoutNewMutation.isPending;
+
+	const canApplyBranch = outlineMode._tag === "Default";
 
 	useHotkeys([
 		{
-			hotkey: workspaceHotkeys.rebaseAllStacks.hotkey,
-			callback: rebaseAllStacks,
+			hotkey: workspaceHotkeys.applyBranch.hotkey,
+			callback: openApplyBranchPicker,
 			options: {
 				conflictBehavior: "allow",
-				enabled: canRebaseAllStacks,
-				meta: workspaceHotkeys.rebaseAllStacks.meta,
+				meta: workspaceHotkeys.applyBranch.meta,
+				enabled: canApplyBranch,
+			},
+		},
+		{
+			hotkey: workspaceHotkeys.createIndependentBranch.hotkey,
+			callback: createIndependentBranch,
+			options: {
+				conflictBehavior: "allow",
+				enabled: canCreateIndependentBranch,
+				meta: workspaceHotkeys.createIndependentBranch.meta,
+				ignoreInputs: true,
+				requireReset: true,
+			},
+		},
+		{
+			hotkey: workspaceHotkeys.updateWorkspace.hotkey,
+			callback: updateWorkspace,
+			options: {
+				conflictBehavior: "allow",
+				enabled: canUpdateWorkspace,
+				meta: workspaceHotkeys.updateWorkspace.meta,
 				ignoreInputs: true,
 			},
 		},
@@ -575,8 +661,6 @@ const WorkspacePage: FC = () => {
 	const selectedProject = projects.find((project) => project.id === projectId);
 	if (!selectedProject) throw new Error("Could not find selected project");
 
-	const rebaseAllLabel = "Integrate upstream changes by rebasing all stacks";
-
 	return (
 		<>
 			<div className={classes(styles.page, detailsFullscreen && styles.pageDetailsFullscreen)}>
@@ -593,21 +677,43 @@ const WorkspacePage: FC = () => {
 							<div className={styles.workspaceControlsActions}>
 								<Tooltip.Root>
 									<Tooltip.Trigger
-										aria-label={rebaseAllLabel}
+										aria-label="Switch to new branch"
 										className={getButtonClassName({ iconOnly: true })}
-										onClick={rebaseAllStacks}
+										onClick={resetWorkspace}
 										// We pass `disabled` here because we want to disable the button, not
 										// the tooltip. Other props should be passed above.
-										render={<Button focusableWhenDisabled disabled={!canRebaseAllStacks} />}
+										render={<Button focusableWhenDisabled disabled={!canResetWorkspace} />}
+									>
+										{branchCheckoutNewMutation.isPending ? (
+											<Icon name="spinner" />
+										) : (
+											<Icon name="undo" />
+										)}
+									</Tooltip.Trigger>
+									<Tooltip.Portal>
+										<Tooltip.Positioner sideOffset={4}>
+											<Tooltip.Popup render={<TooltipPopup />}>Switch to new branch</Tooltip.Popup>
+										</Tooltip.Positioner>
+									</Tooltip.Portal>
+								</Tooltip.Root>
+
+								<Tooltip.Root>
+									<Tooltip.Trigger
+										aria-label={workspaceHotkeys.updateWorkspace.meta.name}
+										className={getButtonClassName({ iconOnly: true })}
+										onClick={updateWorkspace}
+										// We pass `disabled` here because we want to disable the button, not
+										// the tooltip. Other props should be passed above.
+										render={<Button focusableWhenDisabled disabled={!canUpdateWorkspace} />}
 									>
 										<Icon name="arrow-line-down" />
 									</Tooltip.Trigger>
 									<Tooltip.Portal>
 										<Tooltip.Positioner sideOffset={4}>
 											<Tooltip.Popup
-												render={<TooltipPopup kbd={workspaceHotkeys.rebaseAllStacks.hotkey} />}
+												render={<TooltipPopup kbd={workspaceHotkeys.updateWorkspace.hotkey} />}
 											>
-												{rebaseAllLabel}
+												{workspaceHotkeys.updateWorkspace.meta.name}
 											</Tooltip.Popup>
 										</Tooltip.Positioner>
 									</Tooltip.Portal>
@@ -615,10 +721,14 @@ const WorkspacePage: FC = () => {
 
 								<Tooltip.Root>
 									<Tooltip.Trigger
-										className={getButtonClassName({})}
+										aria-label={workspaceHotkeys.applyBranch.meta.name}
+										className={getButtonClassName({ iconOnly: true })}
 										onClick={openApplyBranchPicker}
+										// We pass `disabled` here because we want to disable the button, not
+										// the tooltip. Other props should be passed above.
+										render={<Button focusableWhenDisabled disabled={!canApplyBranch} />}
 									>
-										Apply branch
+										<Icon name="plus" />
 									</Tooltip.Trigger>
 									<Tooltip.Portal>
 										<Tooltip.Positioner sideOffset={4}>

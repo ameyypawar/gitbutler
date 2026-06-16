@@ -155,6 +155,58 @@ Hint: run `but help` for all commands
 }
 
 #[test]
+fn can_repeat_message() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack").unwrap();
+    env.setup_metadata(&["A"]).unwrap();
+
+    env.file("file.txt", "Some text");
+
+    env.but("commit2 -m 'add file.txt' -m 'with more' -m 'text lines'")
+        .assert()
+        .success();
+
+    env.but("status -v")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+╭┄zz [unassigned changes] (no changes)
+┊
+┊╭┄g0 [A]
+┊● b141567 author 2000-01-01 00:00:00 +0000
+┊│     add file.txt  with more  text lines
+┊● 9477ae7 author 2000-01-01 00:00:00 +0000
+┊│     add A 
+├╯
+┊
+┴ 0dc3733 (common base) 2000-01-02 add M
+
+Hint: run `but help` for all commands
+
+"#]]);
+
+    env.but("show b141567")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+Commit:    b14156794f81a138bd06c2a5287fd5db15408b56
+Change-ID: 1
+Author:    author <author@example.com>
+Date:      2000-01-02 00:00:00 +0000 (26y ago)
+Committer: committer <committer@example.com>
+
+add file.txt
+
+with more
+
+text lines
+
+Files changed:
+  A file.txt
+
+"#]]);
+}
+
+#[test]
 fn editor_user_writes_no_message() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack").unwrap();
     env.setup_metadata(&["A"]).unwrap();
@@ -342,6 +394,36 @@ Hint: run `but help` for all commands
 }
 
 #[test]
+fn create_commit_on_new_branch_with_canned_name() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack").unwrap();
+    env.setup_metadata(&["A"]).unwrap();
+
+    env.file("file.txt", "Some text");
+
+    env.but("commit2 -m 'add file.txt' -b").assert().success();
+
+    env.but("status")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+╭┄zz [unassigned changes] (no changes)
+┊
+┊╭┄g0 [A]
+┊●   9477ae7 add A
+├╯
+┊
+┊╭┄br [a-branch-1]
+┊●   633b765 add file.txt
+├╯
+┊
+┴ 0dc3733 (common base) 2000-01-02 add M
+
+Hint: run `but help` for all commands
+
+"#]]);
+}
+
+#[test]
 fn create_commit_on_branch_that_is_not_applied_fails() {
     let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks").unwrap();
     env.setup_metadata(&[]).unwrap();
@@ -396,6 +478,38 @@ fn newly_created_branches_are_included_in_json_output() {
   "commit": "5a6fc56305c69edc974a5ed2d100c525db8fd288",
   "branch": "foo"
 }
+
+"#]]);
+}
+
+#[test]
+fn empty_flag_to_force_empty_commit_when_changes_exist() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("zero-stacks").unwrap();
+    env.setup_metadata(&["A"]).unwrap();
+
+    env.file(
+        "changes",
+        "Some changes that will not be included in commit",
+    );
+
+    env.but("commit2 -m 'empty commit despite changes in worktree' --empty")
+        .assert()
+        .success();
+
+    env.but("status")
+        .assert()
+        .success()
+        .stdout_eq(snapbox::str![[r#"
+╭┄zz [unassigned changes]
+┊   vq A changes
+┊
+┊╭┄br [a-branch-1]
+┊●   341ce70 empty commit despite changes in worktree (no changes)
+├╯
+┊
+┴ 0dc3733 (common base) 2000-01-02 add M
+
+Hint: run `but diff` to see uncommitted changes and `but stage <file>` to stage them to a branch
 
 "#]]);
 }

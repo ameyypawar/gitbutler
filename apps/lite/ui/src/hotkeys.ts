@@ -13,6 +13,7 @@ export type CommandGroup =
 	| "Commit file"
 	| "Commit"
 	| "Details"
+	| "Diff"
 	| "Files"
 	| "Global"
 	| "Outline"
@@ -92,9 +93,16 @@ export const workspaceHotkeys = {
 		hotkey: "Mod+Shift+A",
 		meta: { group: "Branches", name: "Apply branch" },
 	},
-	rebaseAllStacks: {
+	createIndependentBranch: {
+		hotkey: "Mod+N",
+		meta: { group: "Branches", name: "Add new branch" },
+	},
+	updateWorkspace: {
 		hotkey: "Alt+Shift+R",
-		meta: { group: "Stack", name: "Rebase all stacks" },
+		meta: {
+			group: "Global",
+			name: "Update workspace (rebases all stacks)",
+		},
 	},
 	focusPreviousSelectionScope: {
 		hotkey: "H",
@@ -135,6 +143,10 @@ export const outlineHotkeys = {
 		hotkey: "Space",
 		meta: { group: "Branch", name: "Check branch commits" },
 	},
+	createDependentBranchAbove: {
+		hotkey: "N", // like lazygit
+		meta: { group: "Branch", name: "Create dependent branch above" },
+	},
 	setCommitTarget: {
 		hotkey: "Shift+C",
 		meta: { group: "Commit", name: "Set commit target" },
@@ -163,9 +175,9 @@ export const outlineHotkeys = {
 		hotkey: "Shift+P",
 		meta: { group: "Branch", name: "Push with branches below" },
 	},
-	rebaseStack: {
+	updateStack: {
 		hotkey: "Alt+R",
-		meta: { group: "Stack", name: "Rebase stack" },
+		meta: { group: "Stack", name: "Update stack (rebases)" },
 	},
 	renameBranch: {
 		hotkey: "Enter",
@@ -235,16 +247,16 @@ export const operationHotkeys = {
 		hotkey: "Mod+V",
 		meta: { group: "Operation mode", name: "Confirm" },
 	},
-	selectMoveAbove: {
+	selectAbove: {
 		hotkey: "A",
-		meta: { group: "Operation mode", name: "Select move above" },
+		meta: { group: "Operation mode", name: "Select above" },
 	},
-	selectMoveBelow: {
+	selectBelow: {
 		hotkey: "B",
-		meta: { group: "Operation mode", name: "Select move below" },
+		meta: { group: "Operation mode", name: "Select below" },
 	},
-	selectSquash: {
-		hotkey: "S",
-		meta: { group: "Operation mode", name: "Select squash" },
+	selectInto: {
+		hotkey: "I",
+		meta: { group: "Operation mode", name: "Select into" },
 	},
 } satisfies Record<string, HotkeyWithMeta>;

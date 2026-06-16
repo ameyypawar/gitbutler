@@ -19,6 +19,7 @@ use gitbutler_oplog::entry::Snapshot;
 
 use crate::{
     CliId,
+    args::OutputFormat,
     command::legacy::{
         self, ShowDiffInEditor,
         rub::RubOperation,
@@ -27,35 +28,43 @@ use crate::{
             tui::SelectAfterReload,
         },
     },
-    utils::{OutputChannel, diff_specs},
+    utils::{WriteWithUtils, diff_specs},
 };
 
-pub(super) async fn reload_legacy(
+pub(super) fn reload_legacy(
     ctx: &mut Context,
-    out: &mut OutputChannel,
+    out: &mut dyn WriteWithUtils,
     mode: &OperatingMode,
     flags: StatusFlags,
     options: TuiLaunchOptions,
 ) -> anyhow::Result<Vec<StatusOutputLine>> {
+    let mut guard = ctx.exclusive_worktree_access();
+
     {
         let meta = ctx.meta()?;
-        let (_guard, repo, mut ws, _) = ctx.workspace_mut_and_db()?;
-        ws.refresh_from_head(&repo, &meta)?;
+        let project_meta = ctx.project_meta()?;
+        let (repo, mut ws, _) = ctx.workspace_mut_and_db_with_perm(guard.write_permission())?;
+        ws.refresh_from_head(&repo, &meta, project_meta)?;
     }
 
     let mut new_lines = Vec::new();
 
-    legacy::status::build_status_context(ctx, out, mode, flags, StatusRenderMode::Tui(options))
-        .await
-        .and_then(|status_ctx| {
-            legacy::status::build_status_output(
-                ctx,
-                &status_ctx,
-                &mut StatusOutput::Buffer {
-                    lines: &mut new_lines,
-                },
-            )
-        })?;
+    let status_ctx = legacy::status::build_status_context(
+        ctx,
+        guard.write_permission(),
+        out,
+        OutputFormat::Human,
+        mode,
+        flags,
+        StatusRenderMode::Tui(options),
+    )?;
+    legacy::status::build_status_output(
+        ctx,
+        &status_ctx,
+        &mut StatusOutput::Buffer {
+            lines: &mut new_lines,
+        },
+    )?;
 
     Ok(new_lines)
 }
@@ -258,7 +267,7 @@ pub(super) fn create_branch_anchored_legacy(
 ) -> anyhow::Result<String> {
     let new_name = but_api::legacy::workspace::canned_branch_name(ctx)
         .context("failed to generate branch name")?;
-    let anchor = but_api::legacy::stack::create_reference::Anchor::AtReference {
+    let anchor = but_api::legacy::stack::create_reference::Anchor::AtSegment {
         short_name,
         position: but_workspace::branch::create_reference::Position::Above,
     };

@@ -10,7 +10,7 @@ use nonempty::NonEmpty;
 use crate::{
     CliId,
     command::legacy::{
-        rub::{RubOperation, SquashCommitsOperation},
+        rub::{CommitToUnassignedOperation, RubOperation, SquashCommitsOperation},
         status::tui::{Markable, SelectAfterReload},
     },
 };
@@ -68,8 +68,7 @@ pub(super) fn supports_rubbing(id: &CliId) -> bool {
 
 pub(super) fn mark_supports_rubbing(mark: &Markable) -> bool {
     match mark {
-        Markable::Commit { .. } => true,
-        Markable::Uncommitted(..) => false,
+        Markable::Commit { .. } | Markable::Uncommitted(..) => true,
     }
 }
 
@@ -95,7 +94,13 @@ pub(super) fn rub_operation_display(
         RubOperation::UnassignedToCommit(..) => "amend",
         RubOperation::UnassignedToBranch(..) => "assign hunks",
         RubOperation::UnassignedToStack(..) => "assign hunks",
-        RubOperation::CommitToUnassigned(..) => "undo commit",
+        RubOperation::CommitToUnassigned(CommitToUnassignedOperation { commits }) => {
+            if commits.len() == 1 {
+                "undo commit"
+            } else {
+                "undo commits"
+            }
+        }
         RubOperation::CommitToStack(..) => "undo commit",
         RubOperation::SquashCommits(SquashCommitsOperation {
             sources: _,

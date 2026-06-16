@@ -48,7 +48,7 @@ impl BranchManager<'_> {
         perm: &mut RepoExclusive,
     ) -> Result<Stack> {
         let mut vb_state = self.ctx.virtual_branches();
-        let target_base_oid = self.ctx.persisted_default_target()?.sha;
+        let target_base_oid = self.ctx.project_meta()?.target_commit_id_or_err()?;
 
         let mut all_stacks = vb_state
             .list_stacks_in_workspace()
@@ -135,21 +135,16 @@ impl BranchManager<'_> {
             .0
             .id
             .context("BUG: newly applied stacks should always have a stack id")?;
-        let conflicted_stack_short_names_for_display = ws
-            .metadata
-            .as_ref()
-            .map(|md| {
-                md.stacks
-                    .iter()
-                    .filter_map(|s| {
-                        out.conflicting_stack_ids
-                            .contains(&s.id)
-                            .then(|| s.ref_name().map(|rn| rn.shorten().to_string()))
-                            .flatten()
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let conflicted_stack_ids = out
+            .conflicting_stacks
+            .iter()
+            .map(|stack| stack.id)
+            .collect::<Vec<_>>();
+        let conflicted_stack_short_names_for_display = out
+            .conflicting_stacks
+            .iter()
+            .map(|stack| stack.ref_name.shorten().to_string())
+            .collect::<Vec<_>>();
         if let Some(pr_number) = pr_number {
             let mut branch = meta.branch(applied_branch_ref.as_ref())?;
             branch.review.pull_request = Some(pr_number);
@@ -157,7 +152,7 @@ impl BranchManager<'_> {
         }
         Ok((
             applied_branch_stack_id,
-            out.conflicting_stack_ids,
+            conflicted_stack_ids,
             conflicted_stack_short_names_for_display,
         ))
     }

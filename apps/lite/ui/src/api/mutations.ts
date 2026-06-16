@@ -1,10 +1,12 @@
 import { renameBranchInHeadInfo, resolveRelativeTo } from "#ui/api/ref-info.ts";
-import { encodeRefName } from "#ui/api/ref-name.ts";
 import { changesInWorktreeQueryOptions, headInfoQueryOptions } from "#ui/api/queries.ts";
 import { shortCommitId } from "#ui/commit.ts";
 import { errorMessageForToast } from "#ui/errors.ts";
 import { createDiffSpec } from "#ui/operations/diff-specs.ts";
-import { rejectedChangesToastOptions } from "#ui/operations/rejectedChangesToastOptions.tsx";
+import {
+	discardChangesToastOptions,
+	rejectedChangesToastOptions,
+} from "#ui/operations/toastOptions.tsx";
 import { type BranchOperand } from "#ui/operands.ts";
 import { projectActions } from "#ui/projects/state.ts";
 import { useAppDispatch } from "#ui/store.ts";
@@ -18,6 +20,7 @@ import {
 } from "@gitbutler/but-sdk";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Match } from "effect";
+import { BranchCheckoutNewParams, BranchCreateParams, OpenInEditorParams } from "#electron/ipc.ts";
 
 export const useAbsorb = ({ projectId }: { projectId: string }) => {
 	const toastManager = Toast.useToastManager();
@@ -53,6 +56,91 @@ export const useApplyBranch = () => {
 			toastManager.add({
 				type: "error",
 				title: "Failed to apply branch",
+				description: errorMessageForToast(error),
+				priority: "high",
+			});
+		},
+	});
+};
+
+export const useBranchCreate = () => {
+	const dispatch = useAppDispatch();
+	const toastManager = Toast.useToastManager();
+
+	return useMutation({
+		mutationFn: (input: BranchCreateParams) => window.lite.branchCreate(input),
+		onSuccess: async (response, input, _context, mutation) => {
+			mutation.client.setQueryData(
+				headInfoQueryOptions(input.projectId).queryKey,
+				response.workspace.headInfo,
+			);
+			dispatch(
+				projectActions.updateRewrittenCommitReferences({
+					projectId: input.projectId,
+					replacedCommits: response.workspace.replacedCommits,
+					headInfo: response.workspace.headInfo,
+				}),
+			);
+		},
+		onError: (error) => {
+			// oxlint-disable-next-line no-console
+			console.error(error);
+
+			toastManager.add({
+				type: "error",
+				title: "Failed to create branch",
+				description: errorMessageForToast(error),
+				priority: "high",
+			});
+		},
+	});
+};
+
+export const useBranchCheckoutNew = () => {
+	const dispatch = useAppDispatch();
+	const toastManager = Toast.useToastManager();
+
+	return useMutation({
+		mutationFn: (input: BranchCheckoutNewParams) => window.lite.branchCheckoutNew(input),
+		onSuccess: async (response, input, _context, mutation) => {
+			mutation.client.setQueryData(
+				headInfoQueryOptions(input.projectId).queryKey,
+				response.workspace.headInfo,
+			);
+			dispatch(
+				projectActions.updateRewrittenCommitReferences({
+					projectId: input.projectId,
+					replacedCommits: response.workspace.replacedCommits,
+					headInfo: response.workspace.headInfo,
+				}),
+			);
+		},
+		onError: (error) => {
+			// oxlint-disable-next-line no-console
+			console.error(error);
+
+			toastManager.add({
+				type: "error",
+				title: "Failed to switch to new branch",
+				description: errorMessageForToast(error),
+				priority: "high",
+			});
+		},
+	});
+};
+
+export const useOpenInEditor = () => {
+	const toastManager = Toast.useToastManager();
+
+	return useMutation({
+		mutationFn: (input: OpenInEditorParams) => window.lite.openInEditor(input),
+		onError: (error) => {
+			// oxlint-disable-next-line no-console
+			console.error(error);
+
+			toastManager.add({
+				type: "error",
+				title: "Failed to open in editor",
 				description: errorMessageForToast(error),
 				priority: "high",
 			});
@@ -211,6 +299,62 @@ export const useCommitDiscard = () => {
 			toastManager.add({
 				type: "error",
 				title: "Failed to discard commit",
+				description: errorMessageForToast(error),
+				priority: "high",
+			});
+		},
+	});
+};
+
+export const useCommitDiscardChanges = () => {
+	const dispatch = useAppDispatch();
+	const toastManager = Toast.useToastManager();
+
+	return useMutation({
+		mutationFn: window.lite.commitDiscardChanges,
+		onSuccess: async (response, input, _context, mutation) => {
+			mutation.client.setQueryData(
+				headInfoQueryOptions(input.projectId).queryKey,
+				response.workspace.headInfo,
+			);
+			dispatch(
+				projectActions.updateRewrittenCommitReferences({
+					projectId: input.projectId,
+					replacedCommits: response.workspace.replacedCommits,
+					headInfo: response.workspace.headInfo,
+				}),
+			);
+		},
+		onError: (error) => {
+			// oxlint-disable-next-line no-console
+			console.error(error);
+
+			toastManager.add({
+				type: "error",
+				title: "Failed to discard changes",
+				description: errorMessageForToast(error),
+				priority: "high",
+			});
+		},
+	});
+};
+
+export const useDiscardWorktreeChanges = () => {
+	const toastManager = Toast.useToastManager();
+
+	return useMutation({
+		mutationFn: window.lite.discardWorktreeChanges,
+		onSuccess: (rejectedChanges) => {
+			if (rejectedChanges.length > 0)
+				toastManager.add(discardChangesToastOptions({ rejectedChanges }));
+		},
+		onError: (error) => {
+			// oxlint-disable-next-line no-console
+			console.error(error);
+
+			toastManager.add({
+				type: "error",
+				title: "Failed to discard changes",
 				description: errorMessageForToast(error),
 				priority: "high",
 			});
@@ -419,7 +563,7 @@ export const usePushStack = () => {
 	});
 };
 
-export const useRebaseAllStacks = ({ projectId }: { projectId: string }) => {
+export const useWorkspaceIntegrateUpstream = ({ projectId }: { projectId: string }) => {
 	const dispatch = useAppDispatch();
 	const queryClient = useQueryClient();
 	const toastManager = Toast.useToastManager();
@@ -427,7 +571,7 @@ export const useRebaseAllStacks = ({ projectId }: { projectId: string }) => {
 	return useMutation({
 		mutationFn: (updates: Array<BottomUpdate>) =>
 			window.lite.workspaceIntegrateUpstream({ projectId, updates, dryRun: false }),
-		onSuccess: (workspace) => {
+		onSuccess: (workspace, updates) => {
 			queryClient.setQueryData(headInfoQueryOptions(projectId).queryKey, workspace.headInfo);
 			dispatch(
 				projectActions.updateRewrittenCommitReferences({
@@ -439,52 +583,16 @@ export const useRebaseAllStacks = ({ projectId }: { projectId: string }) => {
 
 			toastManager.add({
 				type: "success",
-				title: "Rebased all stacks",
+				title: updates.length === 1 ? "Updated stack" : "Updated stacks",
 			});
 		},
-		onError: (error) => {
+		onError: (error, updates) => {
 			// oxlint-disable-next-line no-console
 			console.error(error);
 
 			toastManager.add({
 				type: "error",
-				title: "Failed to rebase stacks",
-				description: errorMessageForToast(error),
-				priority: "high",
-			});
-		},
-	});
-};
-
-export const useRebaseStack = ({ projectId }: { projectId: string }) => {
-	const dispatch = useAppDispatch();
-	const toastManager = Toast.useToastManager();
-
-	return useMutation({
-		mutationFn: (update: BottomUpdate) =>
-			window.lite.workspaceIntegrateUpstream({ projectId, updates: [update], dryRun: false }),
-		onSuccess: (workspace, _input, _context, mutation) => {
-			mutation.client.setQueryData(headInfoQueryOptions(projectId).queryKey, workspace.headInfo);
-			dispatch(
-				projectActions.updateRewrittenCommitReferences({
-					projectId,
-					replacedCommits: workspace.replacedCommits,
-					headInfo: workspace.headInfo,
-				}),
-			);
-
-			toastManager.add({
-				type: "success",
-				title: "Rebased stack",
-			});
-		},
-		onError: (error) => {
-			// oxlint-disable-next-line no-console
-			console.error(error);
-
-			toastManager.add({
-				type: "error",
-				title: "Failed to rebase stack",
+				title: updates.length === 1 ? "Failed to update stack" : "Failed to update stacks",
 				description: errorMessageForToast(error),
 				priority: "high",
 			});
@@ -545,7 +653,7 @@ export const useRestoreSnapshot = ({ projectId }: { projectId: string }) => {
 			const title = direction === "redo" ? "Redo" : "Undo";
 
 			if (!snapshot) {
-				toastManager.add({ type: "warning", title, description: `Nothing to ${direction}` });
+				toastManager.add({ title, description: `Nothing to ${direction}` });
 				return;
 			}
 
@@ -646,12 +754,10 @@ export const useUpdateBranchName = ({
 
 	return useMutation({
 		mutationFn: window.lite.updateBranchName,
-		onSuccess: async (_response, input, _context, mutation) => {
-			const newBranchRef = encodeRefName(`refs/heads/${input.newName}`);
+		onSuccess: async (newRef, _input, _context, mutation) => {
 			const newBranch: BranchOperand = {
 				stackId,
-				// TODO: ideally the API would return the new ref?
-				branchRef: newBranchRef,
+				branchRef: newRef.fullNameBytes,
 			};
 
 			mutation.client.setQueryData(headInfoQueryOptions(projectId).queryKey, (headInfo) => {
@@ -661,8 +767,8 @@ export const useUpdateBranchName = ({
 					headInfo,
 					stackId,
 					branchRef,
-					newName: input.newName,
-					newBranchRef,
+					newName: newRef.displayName,
+					newBranchRef: newRef.fullNameBytes,
 				});
 			});
 

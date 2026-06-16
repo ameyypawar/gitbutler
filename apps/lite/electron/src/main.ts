@@ -5,12 +5,16 @@ import {
 	type AbsorbParams,
 	type AbsorptionPlanParams,
 	type AssignHunkParams,
+	type BranchCheckoutNewParams,
+	type BranchCreateParams,
 	type BranchDetailsParams,
 	type BranchDiffParams,
 	type CommitAmendParams,
 	type CommitCreateParams,
+	type CommitDiscardChangesParams,
 	type CommitDiscardParams,
 	type CommitDetailsWithLineStatsParams,
+	type DiscardWorktreeChangesParams,
 	type CommitInsertBlankParams,
 	type CommitMoveParams,
 	type CommitSquashParams,
@@ -18,12 +22,14 @@ import {
 	type CommitMoveChangesBetweenParams,
 	type CommitUncommitChangesParams,
 	type MoveBranchParams,
+	type OpenInEditorParams,
 	type PushStackParams,
 	type RemoveBranchParams,
 	type TearOffBranchParams,
 	type TreeChangeDiffParams,
 	type UpdateBranchNameParams,
 	type ApplyParams,
+	type AskpassSubmitPromptResponseParams,
 	type ShowNativeMenuParams,
 	type UnapplyStackParams,
 	type WatcherSubscribeParams,
@@ -39,12 +45,16 @@ import {
 	absorptionPlan,
 	apply,
 	assignHunk,
+	branchCheckoutNew,
+	branchCreate,
 	branchDetails,
 	branchDiff,
 	changesInWorktree,
 	commitAmend,
 	commitCreate,
 	commitDiscard,
+	commitDiscardChanges,
+	discardWorktreeChanges,
 	commitInsertBlank,
 	commitSquash,
 	commitReword,
@@ -54,8 +64,10 @@ import {
 	commitDetailsWithLineStats,
 	commitMoveChangesBetween,
 	listBranches,
+	listEditors,
 	listProjectsStateless,
 	moveBranch,
+	openInEditor,
 	removeBranch,
 	tearOffBranch,
 	treeChangeDiffs,
@@ -69,6 +81,8 @@ import {
 	getRedoTargetSnapshot,
 	peelRestoreSnapshot,
 	workspaceIntegrateUpstream,
+	askpassInit,
+	askpassSubmitPromptResponse,
 } from "@gitbutler/but-sdk";
 import {
 	app,
@@ -121,6 +135,8 @@ const trustedOriginDefaultPermissions: Array<
 const liteProtocolScheme = "lite";
 const liteProtocolHost = "app";
 const contentRootURL = pathToFileURL(path.join(currentDirPath, "../ui"));
+const askpassExecutableName =
+	process.platform === "win32" ? "gitbutler-git-askpass.exe" : "gitbutler-git-askpass";
 
 // Custom scheme to serve files. This is necessary for two reasons:
 //
@@ -166,6 +182,36 @@ const registerLiteProtocolHandler = () => {
 
 		return net.fetch(urlToServe.toString());
 	});
+};
+
+const askpassBinDir = (): string =>
+	app.isPackaged
+		? path.join(process.resourcesPath, "bin")
+		: path.join(currentDirPath, "../../resources/bin");
+
+const configureAskpass = (): void => {
+	if (app.isPackaged)
+		process.env.GITBUTLER_ASKPASS_BIN = path.join(askpassBinDir(), askpassExecutableName);
+	else process.env.GITBUTLER_ASKPASS_BIN ??= path.join(askpassBinDir(), askpassExecutableName);
+
+	try {
+		askpassInit((err, event) => {
+			if (err) {
+				// oxlint-disable-next-line no-console
+				console.error(`Error encountered while initializing askpass:\n${err}`);
+				return;
+			}
+
+			// Send the prompt to all windows.
+			// TODO: Probably not what we want if we have multiple windows. We should
+			// figure out how to send it to the right one.
+			for (const window of BrowserWindow.getAllWindows())
+				window.webContents.send(liteIpcChannels.askpassPrompt, event);
+		});
+	} catch (err) {
+		// oxlint-disable-next-line no-console
+		console.error(`Error encountered while configuring askpass:\n${String(err)}`);
+	}
 };
 
 // Dev-only runtime icons path (packaged builds rely on electron-builder icons).
@@ -258,6 +304,11 @@ const registerIpcHandlers = (): void => {
 		(_e, { projectId, target }: AbsorptionPlanParams) => absorptionPlan(projectId, target),
 	);
 	senderValidatingHandle(
+		liteIpcChannels.askpassSubmitResponse,
+		(_e, { id, response }: AskpassSubmitPromptResponseParams) =>
+			askpassSubmitPromptResponse(id, response),
+	);
+	senderValidatingHandle(
 		liteIpcChannels.absorb,
 		(_e, { projectId, absorptionPlan }: AbsorbParams) => absorb(projectId, absorptionPlan),
 	);
@@ -267,6 +318,15 @@ const registerIpcHandlers = (): void => {
 	senderValidatingHandle(
 		liteIpcChannels.assignHunk,
 		(_e, { projectId, assignments }: AssignHunkParams) => assignHunk(projectId, assignments),
+	);
+	senderValidatingHandle(
+		liteIpcChannels.branchCreate,
+		(_e, { projectId, newRef, placement }: BranchCreateParams) =>
+			branchCreate(projectId, newRef, placement),
+	);
+	senderValidatingHandle(
+		liteIpcChannels.branchCheckoutNew,
+		(_e, { projectId, name }: BranchCheckoutNewParams) => branchCheckoutNew(projectId, name),
 	);
 	senderValidatingHandle(
 		liteIpcChannels.branchDetails,
@@ -299,9 +359,19 @@ const registerIpcHandlers = (): void => {
 			commitDiscard(projectId, subjectCommitId, dryRun),
 	);
 	senderValidatingHandle(
+		liteIpcChannels.commitDiscardChanges,
+		(_e, { projectId, commitId, changes, dryRun }: CommitDiscardChangesParams) =>
+			commitDiscardChanges(projectId, commitId, changes, dryRun),
+	);
+	senderValidatingHandle(
 		liteIpcChannels.commitDetailsWithLineStats,
 		(_e, { projectId, commitId }: CommitDetailsWithLineStatsParams) =>
 			commitDetailsWithLineStats(projectId, commitId),
+	);
+	senderValidatingHandle(
+		liteIpcChannels.discardWorktreeChanges,
+		(_e, { projectId, changes }: DiscardWorktreeChangesParams) =>
+			discardWorktreeChanges(projectId, changes),
 	);
 	senderValidatingHandle(
 		liteIpcChannels.commitInsertBlank,
@@ -358,11 +428,17 @@ const registerIpcHandlers = (): void => {
 		liteIpcChannels.listBranches,
 		(_e, projectId: string, filter: BranchListingFilter | null) => listBranches(projectId, filter),
 	);
+	senderValidatingHandle(liteIpcChannels.listEditors, () => listEditors());
 	senderValidatingHandle(liteIpcChannels.listProjects, () => listProjectsStateless());
 	senderValidatingHandle(
 		liteIpcChannels.moveBranch,
 		(_e, { projectId, subjectBranch, targetBranch, dryRun }: MoveBranchParams) =>
 			moveBranch(projectId, subjectBranch, targetBranch, dryRun),
+	);
+	senderValidatingHandle(
+		liteIpcChannels.openInEditor,
+		(_e, { projectId, editorId, path }: OpenInEditorParams) =>
+			openInEditor(projectId, editorId, path),
 	);
 	senderValidatingHandle(liteIpcChannels.pathJoin, (_e, ...paths: Array<string>) =>
 		path.join(...paths),
@@ -495,6 +571,8 @@ const createMainWindow = async (): Promise<void> => {
 
 app.enableSandbox(); // forces sandboxing for all renderers, even if they try to launch without
 void app.whenReady().then(async () => {
+	configureAskpass();
+
 	if (app.isPackaged) {
 		registerLiteProtocolHandler();
 
@@ -502,8 +580,7 @@ void app.whenReady().then(async () => {
 		const productionCsp =
 			"default-src 'none';" +
 			"script-src 'self' 'wasm-unsafe-eval';" +
-			// Hash is for inline style in index.html
-			"style-src 'self' 'sha256-XBXaUBQCe+0UGd1QCfoPFCc7UsLKd8xrn9oXNYqjFog=';" +
+			"style-src 'self' 'unsafe-inline';" +
 			"font-src 'self';" +
 			"connect-src 'self';" +
 			"object-src 'none';" +

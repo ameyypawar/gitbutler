@@ -123,7 +123,7 @@
 	function integrationRowSeries(
 		statusInfo: UpstreamIntegrationStackStatus,
 	): { name: string; status: "integrated" | "conflicted" | "clear" }[] {
-		return [...statusInfo.branchStatuses].reverse();
+		return [...statusInfo.branchStatuses];
 	}
 </script>
 
@@ -160,7 +160,7 @@
 							<SimpleCommitRow
 								title={descriptionTitle(commit) ?? ""}
 								sha={commit.id}
-								date={new Date(commit.createdAt)}
+								date={new Date(commit.committedAt)}
 								author={commit.author.name}
 								{url}
 								onOpen={(url) => urlService.openExternalUrl(url)}

@@ -3,17 +3,10 @@ import { commitTitle, shortCommitId } from "#ui/commit.ts";
 import { Match } from "effect";
 import { type RefInfo } from "@gitbutler/but-sdk";
 import { Operand } from "#ui/operands.ts";
-import { formatHunkHeader } from "#ui/hunk.ts";
 import { assert } from "#ui/assert.ts";
 
-export const operationSourceLabel = ({
-	source,
-	headInfo,
-}: {
-	source: Operand;
-	headInfo: RefInfo;
-}) =>
-	Match.value(source).pipe(
+export const operandLabel = ({ operand, headInfo }: { operand: Operand; headInfo: RefInfo }) =>
+	Match.value(operand).pipe(
 		Match.tagsExhaustive({
 			Branch: ({ branchRef }) => {
 				const segment = findSegmentByBranchRef({ headInfo, branchRef });
@@ -24,10 +17,13 @@ export const operationSourceLabel = ({
 			Commit: ({ commitId }) => {
 				const commit = findCommit({ headInfo, commitId });
 				return commit
-					? `${commitTitle(commit.message)}${commit.hasConflicts ? " ⚠️" : ""}`
+					? `${commitTitle(commit.message) ?? "(no message)"}${commit.hasConflicts ? " ⚠️" : ""}`
 					: shortCommitId(commitId);
 			},
 			Stack: () => "Stack",
-			Hunk: ({ hunkHeader }) => `Hunk ${formatHunkHeader(hunkHeader)}`,
+			Hunk: ({ lineGroups }) => {
+				const count = lineGroups.reduce((sum, group) => sum + group.lines, 0);
+				return `${count} changed line${count !== 1 ? "s" : ""}`;
+			},
 		}),
 	);

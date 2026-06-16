@@ -1,7 +1,7 @@
 import { TooltipPopup } from "#ui/components/Tooltip.tsx";
 import { Operand } from "#ui/operands.ts";
-import { operationLabel } from "#ui/operations/operation.ts";
-import { getTransferOperation, type OutlineMode } from "#ui/outline/mode.ts";
+import { getOperation } from "#ui/operations/operation.ts";
+import { type OutlineMode } from "#ui/outline/mode.ts";
 import { Tooltip, useRender } from "@base-ui/react";
 import { Match } from "effect";
 import { FC } from "react";
@@ -16,18 +16,18 @@ export const OperationTooltip: FC<
 	const tooltip = isActive
 		? Match.value(outlineMode).pipe(
 				Match.tags({
-					Transfer: ({ value: mode }) =>
-						Match.value(mode).pipe(
-							Match.tags({
-								Pointer: (mode) => {
-									const operation = getTransferOperation({ mode, target });
-									if (!operation) return null;
+					Absorb: () => <>Absorb target</>,
+					Transfer: ({ value: mode }) => {
+						if (mode.operationType === null) return null;
+						const operation = getOperation({
+							source: mode.source,
+							target,
+							operationType: mode.operationType,
+						});
+						if (!operation) return null;
 
-									return <>{operationLabel(operation)}</>;
-								},
-							}),
-							Match.orElse(() => null),
-						),
+						return operation.label;
+					},
 				}),
 				Match.orElse(() => null),
 			)
@@ -36,7 +36,7 @@ export const OperationTooltip: FC<
 	const trigger = useRender({ render, props });
 
 	return (
-		<Tooltip.Root open={!!tooltip} disableHoverablePopup>
+		<Tooltip.Root open={tooltip !== null} disableHoverablePopup>
 			<Tooltip.Trigger render={trigger} />
 			<Tooltip.Portal>
 				<Tooltip.Positioner sideOffset={8} side="right">

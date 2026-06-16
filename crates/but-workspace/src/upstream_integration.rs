@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result, bail};
 
-use but_core::RefMetadata;
+use but_core::{RefMetadata, ref_metadata::ProjectMeta};
 use but_graph::workspace::commit::is_managed_workspace_by_message;
 use but_rebase::{
     commit::DateMode,
@@ -40,6 +40,8 @@ pub struct BottomUpdate {
 pub struct IntegrateUpstreamOutcome<'ws, 'meta, M: RefMetadata> {
     /// The updated workspace metadata.
     pub ws_meta: but_core::ref_metadata::Workspace,
+    /// The updated project metadata.
+    pub project_meta: ProjectMeta,
     /// The rebased outcome.
     pub rebase: SuccessfulRebase<'ws, 'meta, M>,
 }
@@ -122,6 +124,7 @@ struct Stack {
 pub fn integrate_upstream<'ws, 'meta, M: RefMetadata>(
     workspace: &'ws mut but_graph::Workspace,
     meta: &'meta mut M,
+    project_meta: ProjectMeta,
     repo: &gix::Repository,
     updates: Vec<BottomUpdate>,
 ) -> Result<IntegrateUpstreamOutcome<'ws, 'meta, M>> {
@@ -129,7 +132,7 @@ pub fn integrate_upstream<'ws, 'meta, M: RefMetadata>(
         .metadata
         .clone()
         .context("Cannot update a workspace with no metadata")?;
-    let target_sha = ws_meta
+    let target_sha = project_meta
         .target_commit_id
         .context("Cannot update a workspace without a target sha")?;
     let target_ref = workspace
@@ -292,10 +295,27 @@ pub fn integrate_upstream<'ws, 'meta, M: RefMetadata>(
         for selector in &fully_integrated_workspace_parents {
             editor.remove_edges(workspace_commit_selector, *selector)?;
         }
-        if !fully_integrated_workspace_parents.is_empty()
-            && editor.direct_parents(workspace_commit_selector)?.is_empty()
-        {
-            editor.add_edge(workspace_commit_selector, target_ref_selector, 0)?;
+        let direct_parents = editor.direct_parents(workspace_commit_selector)?;
+        match direct_parents.as_slice() {
+            [(parent_selector, parent_order)]
+                if fully_integrated_workspace_parents.is_empty()
+                    && selector_commit_id(&editor, *parent_selector)? == Some(target_sha)
+                    && target_sha != target_ref_commit.detach() =>
+            {
+                // Only parent is the old target sha, and that's not the latest tip of the target ref.
+                // We need to reparent it onto the latest target ref.
+                editor.remove_edges(workspace_commit_selector, *parent_selector)?;
+                editor.add_edge(
+                    workspace_commit_selector,
+                    target_ref_selector,
+                    *parent_order,
+                )?;
+            }
+            [] if !fully_integrated_workspace_parents.is_empty() => {
+                // Orphaned workspace, reparent onto the target ref.
+                editor.add_edge(workspace_commit_selector, target_ref_selector, 0)?;
+            }
+            _ => {}
         }
     }
 
@@ -372,9 +392,11 @@ pub fn integrate_upstream<'ws, 'meta, M: RefMetadata>(
         }
     }
 
-    ws_meta.target_commit_id = Some(target_ref_commit.detach());
+    let mut project_meta = project_meta;
+    project_meta.target_commit_id = Some(target_ref_commit.detach());
     Ok(IntegrateUpstreamOutcome {
         ws_meta,
+        project_meta,
         rebase: editor.rebase()?,
     })
 }
@@ -544,4 +566,21 @@ fn commit_ids<'ws, 'meta, M: RefMetadata>(
                 .transpose()
         })
         .collect()
+}
+
+fn selector_commit_id<M: RefMetadata>(
+    editor: &Editor<'_, '_, M>,
+    selector: Selector,
+) -> Result<Option<gix::ObjectId>> {
+    Ok(match editor.lookup_step(selector)? {
+        Step::Pick(Pick { id, .. }) => Some(id),
+        Step::Reference { refname } => Some(
+            editor
+                .repo()
+                .find_reference(refname.as_ref())?
+                .id()
+                .detach(),
+        ),
+        Step::None => None,
+    })
 }

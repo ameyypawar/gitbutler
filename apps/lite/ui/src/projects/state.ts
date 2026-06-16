@@ -1,15 +1,15 @@
-import { createSlice, type PayloadAction } from "@reduxjs/toolkit";
-import type { RootState } from "#ui/store.ts";
-import { type AbsorptionTarget, type RefInfo, type RelativeTo } from "@gitbutler/but-sdk";
 import {
 	type BranchOperand,
 	type CommitOperand,
-	type FileOperand,
+	type HunkOperand,
 	type Operand,
 } from "#ui/operands.ts";
-import * as workspace from "#ui/projects/workspace/state.ts";
 import { type OperationType } from "#ui/operations/operation.ts";
 import { type TransferOperationMode } from "#ui/outline/mode.ts";
+import * as workspace from "#ui/projects/workspace/state.ts";
+import type { RootState } from "#ui/store.ts";
+import { type AbsorptionTarget, type RefInfo, type RelativeTo } from "@gitbutler/but-sdk";
+import { createSlice, type PayloadAction } from "@reduxjs/toolkit";
 
 type Dialog =
 	| { _tag: "None" }
@@ -69,11 +69,19 @@ const projectSlice = createSlice({
 		},
 		selectFiles: (
 			state,
-			action: PayloadAction<{ projectId: string; selection: FileOperand | null }>,
+			action: PayloadAction<{ projectId: string; selection: string | null }>,
 		) => {
 			const { projectId, selection } = action.payload;
 			const projectState = ensureProjectState(state, projectId);
 			workspace.selectFiles(projectState.workspace, selection);
+		},
+		selectDiff: (
+			state,
+			action: PayloadAction<{ projectId: string; selection: HunkOperand | null }>,
+		) => {
+			const { projectId, selection } = action.payload;
+			const projectState = ensureProjectState(state, projectId);
+			workspace.selectDiff(projectState.workspace, selection);
 		},
 		startRewordCommit: (
 			state,
@@ -267,6 +275,9 @@ export const selectProjectSelectionOutline = (state: RootState, projectId: strin
 
 export const selectProjectSelectionFiles = (state: RootState, projectId: string) =>
 	workspace.selectSelectionFilesState(selectProjectWorkspaceState(state, projectId));
+
+export const selectProjectSelectionDiff = (state: RootState, projectId: string) =>
+	workspace.selectSelectionDiffState(selectProjectWorkspaceState(state, projectId));
 
 export const selectProjectOutlineModeState = (state: RootState, projectId: string) =>
 	workspace.selectMode(selectProjectWorkspaceState(state, projectId));

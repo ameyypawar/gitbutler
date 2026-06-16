@@ -1,65 +1,29 @@
-.section {
-	--padding: 6px;
-	--item-row-border-radius: 8px;
-	padding: var(--padding);
-	/* Concentric */
-	border-radius: calc(var(--item-row-border-radius) + var(--padding));
-	background-color: var(--bg-2);
-}
-
-.itemRow,
-.itemRowEmpty {
+.itemRow {
 	display: flex;
 	column-gap: 8px;
 	min-height: 28px;
 	padding-inline: 8px;
-	padding-block: 6px;
-}
-
-.itemRow {
-	border-radius: var(--item-row-border-radius);
-
-	&:where(:hover) {
-		background-color: var(--button-ghost-hover-bg);
-	}
 
 	&[inert] {
 		opacity: 0.5;
 	}
 }
 
-.itemRowIconButton {
-	display: grid;
-	margin: -4px;
-	padding: 4px;
-	border-radius: 6px;
+.itemRowInteractive {
+	border-radius: var(--radius-m);
 
-	&:not([data-disabled]):hover {
-		.itemRow:not(.itemRowSelected) & {
-			background-color: light-dark(var(--clr-gray-70), var(--clr-gray-20));
-		}
-
-		.itemRowSelected & {
-			background-color: light-dark(var(--clr-gray-30), var(--clr-gray-70));
-		}
+	&:where(:hover) {
+		background-color: var(--button-ghost-hover-bg);
 	}
-
-	&[data-disabled] {
-		opacity: 0.5;
-	}
-}
-
-.itemRowEmpty {
-	color: var(--text-2);
 }
 
 .itemRowSelected {
-	background-color: color-mix(var(--fill-gray-bg) 60%, transparent);
-	color: var(--fill-gray-fg);
+	background-color: color-mix(var(--fill-gray-bg) 13%, transparent);
 
-	&:has(:where(textarea, input):focus),
-	:where([data-selection-scope]:focus) & {
+	&:has(:is(textarea, input):focus),
+	[data-selection-scope]:focus & {
 		background-color: var(--fill-gray-bg);
+		color: var(--fill-gray-fg);
 	}
 }
 
@@ -70,12 +34,15 @@
 
 .itemRowToolbar {
 	display: none;
-	column-gap: 8px;
+	column-gap: 2px;
+	margin-inline: -4px;
+	margin-block: -2px;
+	padding-block: 6px;
 
 	.itemRow:hover &,
 	.itemRow:focus-within &,
 	.itemRowSelected &,
-	.forceVisibleToolbar & {
+	&.itemRowToolbarForceVisible {
 		display: flex;
 	}
 }
@@ -85,4 +52,52 @@
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+}
+
+.itemRowLabelRegular {
+	padding-block: 6px;
+}
+
+.itemRowLabelHeading {
+	padding-block: 5.5px;
+}
+
+.itemRowLabelEmpty {
+	color: var(--text-2);
+}
+
+.itemRowButton {
+	[data-selection-scope]:focus .itemRowSelected &,
+	.itemRowSelected:has(:is(textarea, input):focus) & {
+		/* Duplicated styles for inverted button variant. This is necessary to make
+		the variant responsive to selection/focus changes purely with CSS. */
+
+		--button-border: none;
+		--button-bg: transparent;
+		--button-fg: var(--text-1-invert);
+		--button-icon-opacity: 0.7;
+		--button-hover-bg: color-mix(in srgb, var(--scale-gray-100) 5%, transparent);
+		--button-hover-icon-opacity: 0.9;
+	}
+}
+
+.changesCountBubble {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 20px;
+	height: 16px;
+	margin-inline-start: 6px;
+	margin-block-start: -1px;
+	padding-inline: 4px;
+	padding-block: 2px;
+	border-radius: 10px;
+	background-color: var(--fill-gray-bg);
+	color: var(--fill-gray-fg);
+	vertical-align: middle;
+
+	[data-selection-scope]:focus .itemRowSelected & {
+		background-color: var(--fill-gray-fg);
+		color: var(--fill-gray-bg);
+	}
 }

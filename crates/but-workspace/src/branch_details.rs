@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use anyhow::Context as _;
-use but_core::RefMetadata;
+use but_core::{RefMetadata, ref_metadata::ProjectMeta};
 use gix::{
     date::parse::TimeBuf, prelude::ObjectIdExt as _, reference::Category, remote::Direction,
 };
@@ -31,13 +31,15 @@ pub fn branch_details(
     repo: &gix::Repository,
     name: &gix::refs::FullNameRef,
     meta: &impl RefMetadata,
+    project_meta: &ProjectMeta,
 ) -> anyhow::Result<ui::BranchDetails> {
-    let integration_branch_name = workspace_data_of_default_workspace_branch(meta)?
-        .context(
-            "TODO: cannot run in non-workspace mode yet.\
+    workspace_data_of_default_workspace_branch(meta)?.context(
+        "TODO: cannot run in non-workspace mode yet.\
         It would need a way to deal with limiting the commit traversal",
-        )?
+    )?;
+    let integration_branch_name = project_meta
         .target_ref
+        .clone()
         .context("TODO: a target to integrate with is currently needed for a workspace commit")?;
     let mut integration_branch = repo
         .find_reference(&integration_branch_name)
@@ -195,7 +197,8 @@ fn upstream_commits_gix(
         out.push(UpstreamCommit {
             id: info.id,
             message: commit.message.into(),
-            created_at: i128::from(commit.time()?.seconds) * 1000,
+            authored_at: i128::from(commit.author()?.time()?.seconds) * 1000,
+            committed_at: i128::from(commit.time()?.seconds) * 1000,
             author,
             change_id,
         });
@@ -234,7 +237,8 @@ fn local_commits_gix(
             message,
             has_conflicts: is_conflicted,
             state: CommitState::LocalAndRemote(info.id),
-            created_at: i128::from(commit.committer.time.seconds) * 1000,
+            authored_at: i128::from(commit.author.time.seconds) * 1000,
+            committed_at: i128::from(commit.committer.time.seconds) * 1000,
             author,
             change_id: commit.change_id().to_string(),
             gerrit_review_url: None,

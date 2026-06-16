@@ -48,6 +48,35 @@ export declare function applyBranchIntegration(projectId: string, branch: string
  */
 export declare function assignHunk(projectId: string, assignments: Array<HunkAssignmentRequest>): Promise<void>
 
+/**
+ * Checks out an existing local branch and returns the resulting workspace state.
+ *
+ * This acquires exclusive worktree access from `ctx`, updates the worktree and
+ * index through [`but_core::worktree::safe_checkout()`], then points `HEAD`
+ * symbolically at `branch`. The branch must be an existing full local branch
+ * name under `refs/heads/`.
+ */
+export declare function branchCheckout(projectId: string, branch: FullNameBytes): Promise<BranchCheckoutResult>
+
+/**
+ * Creates a new local branch at the project target SHA, checks it out, and
+ * returns the resulting workspace state.
+ *
+ * If `name` is provided, it is treated as a short branch name and normalized
+ * before creating `refs/heads/<name>`. If omitted, a unique canned branch name
+ * is generated. The resulting branch must not already exist.
+ */
+export declare function branchCheckoutNew(projectId: string, name: string | null): Promise<BranchCheckoutResult>
+
+/**
+ * Creates a new branch named `new_ref` at `placement`.
+ *
+ * This acquires exclusive worktree access from `ctx`, creates the branch,
+ * and records an oplog snapshot on success. For lower-level implementation
+ * details, see [`but_workspace::branch::create_reference()`].
+ */
+export declare function branchCreate(projectId: string, newRef: MaybeLossyFullNameRef, placement: BranchCreatePlacement): Promise<BranchCreateResult>
+
 export declare function branchDetails(projectId: string, branchName: string, remote: string | null): Promise<BranchDetails>
 
 /**
@@ -122,6 +151,17 @@ export declare function commitDetailsWithLineStats(projectId: string, commitId: 
  * no oplog entry is persisted. See [`commit_discard_with_perm()`] for details.
  */
 export declare function commitDiscard(projectId: string, subjectCommitId: string, dryRun: boolean): Promise<CommitDiscardResult>
+
+/**
+ * Discard specific changes from `commit_id`, removing them from the commit
+ * and the workspace.
+ *
+ * Unlike [`super::uncommit::commit_uncommit_changes()`], the selected changes
+ * are not surfaced as uncommitted workspace modifications. When `dry_run` is
+ * enabled, the returned workspace previews the discard and no oplog entry is
+ * persisted. See [`commit_discard_changes_with_perm()`] for details.
+ */
+export declare function commitDiscardChanges(projectId: string, commitId: string, changes: Array<DiffSpec>, dryRun: boolean): Promise<MoveChangesResult>
 
 /**
  * Inserts a blank commit on `side` of `relative_to` and records an oplog
@@ -205,6 +245,23 @@ export declare function commitUncommit(projectId: string, subjectCommitIds: Arra
 export declare function commitUncommitChanges(projectId: string, commitId: string, changes: Array<DiffSpec>, assignTo: string | null, dryRun: boolean): Promise<MoveChangesResult>
 
 /**
+ * Discard all worktree changes that match the specs in `worktree_changes`.
+ *
+ * If whole files should be discarded, be sure to not pass any hunks
+ *
+ * Returns the `worktree_changes` that couldn't be applied,
+ */
+export declare function discardWorktreeChanges(projectId: string, worktreeChanges: Array<DiffSpec>): Promise<Array<DiffSpec>>
+
+/** Supported editor configuration for API clients. */
+export interface Editor {
+  /** Identifier used to refer to the editor. */
+  id: string
+  /** Name of the editor. */
+  name: string
+}
+
+/**
  * Web compare URL for a branch — drives the "Open in browser"
  * affordances without making the renderer hold per-forge URL
  * templates. `fork` is the owner namespace for fork compares.
@@ -258,6 +315,9 @@ export declare function listBranches(projectId: string, filter: BranchListingFil
 
 export declare function listCiChecks(projectId: string, reference: string, cacheConfig: CacheConfig | null): Promise<Array<CiCheck>>
 
+/** List all supported editors. */
+export declare function listEditors(): Promise<Array<Editor>>
+
 export declare function listProjectsStateless(): Promise<Array<ProjectForFrontend>>
 
 export declare function listReviews(projectId: string, cacheConfig: CacheConfig | null): Promise<Array<ForgeReview>>
@@ -276,6 +336,16 @@ export declare function mergeReview(projectId: string, reviewId: number, mergeMe
  * entry is persisted.
  */
 export declare function moveBranch(projectId: string, subjectBranch: string, targetBranch: string, dryRun: boolean): Promise<MoveBranchResult>
+
+/**
+ * Open `path` within the given project's workdir.
+ *
+ * `path` must be relative to the workdir of the repository and must resolve to a file or directory
+ * within the workdir, including the workdir root itself. Otherwise an error is returned.
+ *
+ * [`list_editors`] provides the available `editor_id`s.
+ */
+export declare function openInEditor(projectId: string, editorId: string, path: string): Promise<void>
 
 /**
  * Find the final snapshot that a restore snapshot will restore from.
@@ -373,7 +443,7 @@ export declare function unapplyStack(projectId: string, stackId: string): Promis
  *
  * See [`update_branch_name_with_perm()`] for the underlying mutation.
  */
-export declare function updateBranchName(projectId: string, stackId: string, branchName: string, newName: string): Promise<void>
+export declare function updateBranchName(projectId: string, stackId: string, branchName: string, newName: string): Promise<BranchReference>
 
 /**
  * Update arbitrary fields of a single review (body, state, target base).
@@ -413,6 +483,29 @@ export declare class WatcherHandle {
   /** Returns true if this handle still owns a running watcher. */
   get active(): boolean
 }
+
+/** Additional context sent alongside a credential prompt. */
+export type AskpassContext =
+  | { type: 'Push', /** The stack being pushed, if one is associated with the prompt. */
+branchId?: string }
+| { type: 'Fetch', /** The user-visible action associated with the fetch. */
+action: string }
+| { type: 'SignedCommit', /** The stack being signed, if one is associated with the prompt. */
+branchId?: string }
+| { type: 'Clone', /** The URL being cloned. */
+url: string }
+
+/** Initialize the process-global askpass broker and forward prompt events to JavaScript. */
+export declare function askpassInit(callback: ((err: Error | null, arg: AskpassPromptEvent) => any)): void
+
+export interface AskpassPromptEvent {
+  id: string
+  prompt: string
+  context: AskpassContext
+}
+
+/** Submit a response for a pending askpass prompt. */
+export declare function askpassSubmitPromptResponse(id: string, response?: string | undefined | null): Promise<void>
 
 export interface WatcherEvent {
   name: string
@@ -502,9 +595,18 @@ export type AppSettings = {
 
 /** JSON sibling of [`but_workspace::branch::apply::Outcome`]. */
 export type ApplyOutcome = {
-  /** Whether the workspace changed while applying the branch. */
+  /**
+   * Whether `apply()` produced a new workspace graph.
+   *
+   * This can be true even when merge conflicts prevented the result from being persisted.
+   * Use `applied_branches` to determine whether anything was persisted.
+   */
   workspaceChanged: boolean;
-  /** The branches that were actually applied. */
+  /**
+   * The branches that were actually persisted into the workspace.
+   *
+   * This is empty when the branch was already present or when conflicts aborted the apply.
+   */
   appliedBranches: Array<FullRefName>;
   /** Whether the workspace reference had to be created. */
   workspaceRefCreated: boolean;
@@ -576,6 +678,33 @@ export type BranchAuthor = {
   /** The email of the author as configured in the git config */
   email: string | null;
   gravatarUrl: string | null;
+};
+
+/** JSON transport type for checking out a branch. */
+export type BranchCheckoutResult = {
+  /** Workspace state after checking out the branch. */
+  workspace: WorkspaceState;
+};
+
+/** JSON transport type describing where to create a new branch. */
+export type BranchCreatePlacement = {
+  type: "independent";
+} | {
+  type: "dependent";
+  subject: {
+    /** The commit or reference to place the new branch next to. */
+    relativeTo: RelativeTo;
+    /** Which side of `relative_to` the new branch should be placed on. */
+    side: InsertSide;
+  };
+};
+
+/** JSON transport type for creating a branch. */
+export type BranchCreateResult = {
+  /** Workspace state after creating the branch. */
+  workspace: WorkspaceState;
+  /** The name of the crated reference */
+  newRef: BranchReference;
 };
 
 /** Information about the current state of a branch. */
@@ -849,8 +978,10 @@ export type Commit = {
    * Note that remote only commits in the context of a branch are expressed with the [`UpstreamCommit`] struct instead of this.
    */
   state: CommitState;
-  /** Commit creation time in Epoch milliseconds. */
-  createdAt: number;
+  /** Time at which the commit was authored, in Epoch milliseconds. */
+  authoredAt: number;
+  /** Time at which the commit was committed, in Epoch milliseconds. */
+  committedAt: number;
   /** The author of the commit. */
   author: Author;
   /**
@@ -1236,6 +1367,14 @@ export type ForgeUser = {
   provider: "gitlab";
   details: GitlabAccountIdentifier;
 };
+
+/**
+ * A full reference name accepted as raw bytes.
+ *
+ * Use this as parameter transport when callers must avoid lossy UTF-8
+ * conversion at the API boundary.
+ */
+export type FullNameBytes = Array<number>;
 
 /** The full name of a Git reference. */
 export type FullRefName = {
@@ -1663,6 +1802,15 @@ export type LineStats = {
   filesChanged: number;
 };
 
+/**
+ * An optional full reference name accepted as a string like `refs/heads/main`,
+ * for use as a parameter transport via `#[but_api(...)]`.
+ *
+ * The name is validated during deserialization. Note that it is lossy: a name
+ * that can't be represented in Unicode can't be passed through this type.
+ */
+export type MaybeLossyFullNameRef = string | null;
+
 /** How to combine messages of commits being squashed. */
 export type MessageCombinationStrategy = "KeepBoth" | "KeepSubject" | "KeepTarget";
 
@@ -1872,7 +2020,8 @@ export type RelativeTo = {
 export type RemoteCommit = {
   id: string;
   description: string;
-  createdAt: number;
+  authoredAt: number;
+  committedAt: number;
   author: Author;
   changeId: string | null;
   parentIds: Array<string>;
@@ -2334,8 +2483,10 @@ export type UpstreamCommit = {
   id: string;
   /** The message of the commit. */
   message: string;
-  /** Commit creation time in Epoch milliseconds. */
-  createdAt: number;
+  /** Time at which the commit was authored, in Epoch milliseconds. */
+  authoredAt: number;
+  /** Time at which the commit was committed, in Epoch milliseconds. */
+  committedAt: number;
   /** The author of the commit. */
   author: Author;
   /** The GitButler change-id associated with this commit, if available. */
@@ -2367,9 +2518,6 @@ export type WatcherGitHeadPayload = {
   operatingMode: OperatingMode;
 };
 
-/** Remote tracking refs changed (e.g. after a push or external git operation). */
-export type WatcherGitRemoteActivityPayload = null;
-
 /** The type of payloads a watcher event can have */
 export type WatcherPayload = {
   type: "gitFetch";
@@ -2381,12 +2529,15 @@ export type WatcherPayload = {
   type: "gitActivity";
   subject: WatcherGitActivityPayload;
 } | {
-  type: "gitRemoteActivity";
-  subject: WatcherGitRemoteActivityPayload;
-} | {
   type: "worktreeChanges";
   subject: WatcherWorktreeChangesPayload;
+} | {
+  type: "workspaceActivity";
+  subject: WatcherWorkspaceActivityPayload;
 };
+
+/** Workspace activity that requires the UI to re-read branch/stack state. */
+export type WatcherWorkspaceActivityPayload = null;
 
 /** Worktree files changes. */
 export type WatcherWorktreeChangesPayload = {

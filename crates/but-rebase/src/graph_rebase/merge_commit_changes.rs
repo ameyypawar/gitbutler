@@ -1,6 +1,6 @@
 #![doc = include_str!("../../docs/merge_commit_changes.md")]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use anyhow::{Context, Result, bail};
 use but_core::{RefMetadata, RepositoryExt};
@@ -41,12 +41,10 @@ pub struct MergeCommitChangesOutcome {
 /// merged change-range result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MergeCommitChangesConflict {
-    /// The merge base tree for the conflicted merge step.
-    pub base_tree_id: gix::ObjectId,
-    /// The accumulated tree on the "ours" side of the conflicted merge step.
-    pub ours_tree_id: gix::ObjectId,
-    /// The selected commit tree on the "theirs" side of the conflicted merge step.
-    pub theirs_tree_id: gix::ObjectId,
+    /// The merge base trees for the conflicted merge step.
+    pub base_tree_ids: Vec<gix::ObjectId>,
+    /// The merge side trees for the conflicted merge step.
+    pub side_tree_ids: Vec<gix::ObjectId>,
     /// The paths that remained conflicted after auto-resolution.
     pub conflict_entries: but_core::commit::ConflictEntries,
 }
@@ -64,53 +62,53 @@ impl<M: RefMetadata> Editor<'_, '_, M> {
         merge_options: gix::merge::tree::Options,
     ) -> Result<MergeCommitChangesOutcome> {
         let target_commit = but_core::Commit::from_id(target_commit_id.attach(&self.repo))?;
-        let target_tree_id = target_commit.tree_id_or_auto_resolution()?.detach();
         let merge_plan =
             self.plan_commit_changes_for_merge(target_commit_id, subject_commit_ids)?;
-        if merge_plan.is_empty() {
-            let tree_id = target_tree_id;
-            let conflict = if target_commit.is_conflicted() {
-                let (base_tree_id, ours_tree_id, theirs_tree_id) = target_commit
-                    .conflicted_tree_ids()?
-                    .context("conflicted commit is missing conflicted tree sides")?;
-                Some(MergeCommitChangesConflict {
-                    base_tree_id: base_tree_id.detach(),
-                    ours_tree_id: ours_tree_id.detach(),
-                    theirs_tree_id: theirs_tree_id.detach(),
-                    conflict_entries: target_commit
-                        .conflict_entries()?
-                        .context("conflicted commit is missing conflict entries")?,
-                })
-            } else {
-                None
-            };
-            return Ok(MergeCommitChangesOutcome { tree_id, conflict });
+
+        let mut bases = VecDeque::from(target_commit.base_tree_ids()?);
+        let mut sides = VecDeque::from(target_commit.side_tree_ids()?);
+        for change in merge_plan {
+            bases.push_back(change.base_tree_id);
+            let commit = but_core::Commit::from_id(change.commit_id.attach(&self.repo))?;
+            bases.extend(commit.base_tree_ids()?);
+            sides.extend(commit.side_tree_ids()?);
         }
 
-        let mut ours = target_tree_id;
-        let mut conflict = None;
-        let conflict_kind = gix::merge::tree::TreatAsUnresolved::forced_resolution();
+        // Simplify: a base and a side that are identical cancel each other out
+        for i in (0..bases.len()).rev() {
+            if let Some(position) = sides.iter().position(|side| *side == bases[i]) {
+                sides.remove(position);
+                bases.remove(i);
+            }
+        }
 
-        for change in merge_plan {
-            let theirs = but_core::Commit::from_id(change.commit_id.attach(&self.repo))?
-                .tree_id_or_auto_resolution()?
-                .detach();
-            let mut merge = self
-                .repo
-                .merge_trees(
-                    change.base_tree_id,
-                    ours,
-                    theirs,
-                    self.repo.default_merge_labels(),
-                    merge_options.clone(),
-                )
-                .context("failed to merge commit trees")?;
+        let conflict_kind = gix::merge::tree::TreatAsUnresolved::forced_resolution();
+        let mut ours = sides
+            .pop_front()
+            .context("BUG: target_commit should have at least one side")?;
+        while let Some(base) = bases.pop_front() {
+            let theirs = sides
+                .pop_front()
+                .context("attempting to merge commit with unbalanced bases and sides")?;
+            let mut merge = self.repo.merge_trees(
+                base,
+                ours,
+                theirs,
+                self.repo.default_merge_labels(),
+                merge_options.clone(),
+            )?;
             let merged_tree_id = merge.tree.write()?.detach();
+
             if merge.has_unresolved_conflicts(conflict_kind) {
-                conflict = Some(MergeCommitChangesConflict {
-                    base_tree_id: change.base_tree_id,
-                    ours_tree_id: ours,
-                    theirs_tree_id: theirs,
+                // Push back the things that conflict when merged. Note that
+                // "ours" needs to be the frontmost, so we push "theirs" then
+                // "ours".
+                sides.push_front(theirs);
+                sides.push_front(ours);
+                bases.push_front(base);
+                let conflict = Some(MergeCommitChangesConflict {
+                    base_tree_ids: bases.into(),
+                    side_tree_ids: sides.into(),
                     conflict_entries: but_core::commit::conflict_entries_from_merge_outcome(
                         &self.repo,
                         merged_tree_id,
@@ -118,15 +116,20 @@ impl<M: RefMetadata> Editor<'_, '_, M> {
                         conflict_kind,
                     )?,
                 });
-                ours = merged_tree_id;
-                break;
+                return Ok(MergeCommitChangesOutcome {
+                    // As described in the module-level documentation, we stop
+                    // at the first unresolved merge conflict.
+                    tree_id: merged_tree_id,
+                    conflict,
+                });
             }
+
             ours = merged_tree_id;
         }
 
         Ok(MergeCommitChangesOutcome {
             tree_id: ours,
-            conflict,
+            conflict: None,
         })
     }
 
@@ -161,13 +164,15 @@ impl<M: RefMetadata> Editor<'_, '_, M> {
 
         for commit_id in &selected_commit_ids {
             if !traversal
-                .selected_metadata_by_commit
+                .first_parent_metadata_by_selected_commit_id
                 .contains_key(commit_id)
             {
                 bail!("Failed to find commit {commit_id} in rebase editor");
             }
         }
 
+        // A map from selected commit ID to how many child commits it has that
+        // are also selected.
         let mut selected_child_count = HashMap::<gix::ObjectId, usize>::with_capacity(
             traversal.ordered_selected_commit_ids.len(),
         );
@@ -175,7 +180,7 @@ impl<M: RefMetadata> Editor<'_, '_, M> {
             selected_child_count.insert(commit_id, 0);
         }
         for selected_parent_id in traversal
-            .selected_metadata_by_commit
+            .first_parent_metadata_by_selected_commit_id
             .values()
             .filter_map(|metadata| metadata.selected_first_parent_id)
         {
@@ -191,6 +196,14 @@ impl<M: RefMetadata> Editor<'_, '_, M> {
                 .copied()
                 .unwrap_or_default()
                 == 0;
+            // Skip over non-tips (i.e. selected commits that have at least one
+            // child that is itself selected) and commits that are ancestors of
+            // the target. The changes in non-tips are subsumed into the tip of
+            // the chain it's part of.
+            //
+            // For example, consider the chain M<-A<-B<-C where A,B,C are
+            // selected. A and B will be skipped; we will only emit one change C
+            // with base M, which thus includes all changes in A and B too.
             if !is_selected_chain_tip || traversal.target_ancestor_commit_ids.contains(&commit_id) {
                 continue;
             }
@@ -198,7 +211,7 @@ impl<M: RefMetadata> Editor<'_, '_, M> {
             let base_tree_id = base_tree_id_for_emitted_tip(
                 self,
                 commit_id,
-                &traversal.selected_metadata_by_commit,
+                &traversal.first_parent_metadata_by_selected_commit_id,
                 &traversal.target_ancestor_commit_ids,
             )?;
             planned_commit_changes.push(PlannedCommitChange {
@@ -211,16 +224,25 @@ impl<M: RefMetadata> Editor<'_, '_, M> {
     }
 }
 
+/// First-parent metadata for a selected commit. This is subsequently used to
+/// detect chains of selected commits, where each link of the chain is between a
+/// selected commit and its also-selected first parent.
 #[derive(Debug, Clone, Copy)]
-struct SelectedCommitPlanningMetadata {
+struct FirstParentMetadata {
+    /// The first parent ID of the commit, if one exists.
     first_parent_id: Option<gix::ObjectId>,
+    /// Identical to `first_parent_id` if it is also selected; otherwise,
+    /// `None`.
     selected_first_parent_id: Option<gix::ObjectId>,
 }
 
 #[derive(Debug, Default)]
 struct SelectedCommitPlanningTraversal {
+    /// Selected commit IDs in reverse topological order.
     ordered_selected_commit_ids: Vec<gix::ObjectId>,
-    selected_metadata_by_commit: HashMap<gix::ObjectId, SelectedCommitPlanningMetadata>,
+    /// First parent metadata for each element of [Self::ordered_selected_commit_ids].
+    first_parent_metadata_by_selected_commit_id: HashMap<gix::ObjectId, FirstParentMetadata>,
+    /// The target commit ID and all its ancestor commits in the graph.
     target_ancestor_commit_ids: HashSet<gix::ObjectId>,
 }
 
@@ -233,16 +255,14 @@ enum TraversalMode {
 
 /// Traverse the editor graph and return information relevant for the planning.
 ///
-/// The traversal collects information about:
-/// - Which commits are ancestors of the target commit.
-/// - The deterministic order in which selected commits should be considered.
+/// The order of elements in the returned
+/// [SelectedCommitPlanningTraversal::ordered_selected_commit_ids] is
+/// deterministic and based solely on the graph.
 ///
 /// This walk intentionally uses the editor step graph only as a traversal
 /// structure. Parent/tree semantics are still read from the in-memory
 /// repository commits, so callers must only use this planner when the editor
 /// graph and the in-memory repository represent the same commit topology.
-///
-/// Returns [SelectedCommitPlanningTraversal].
 fn traverse_graph_for_planning<M: RefMetadata>(
     editor: &Editor<'_, '_, M>,
     target_commit_id: gix::ObjectId,
@@ -266,14 +286,12 @@ fn traverse_graph_for_planning<M: RefMetadata>(
                 TraversalMode::Normal => {
                     if expanded {
                         if let Step::Pick(Pick { id, .. }) = editor.graph[node] {
-                            if let Some(selected_metadata) = selected_metadata_for_traversed_pick(
-                                editor,
-                                id,
-                                selected_commit_ids,
-                            )? {
+                            if let Some(first_parent_metadata) =
+                                get_first_parent_metadata(editor, id, selected_commit_ids)?
+                            {
                                 traversal
-                                    .selected_metadata_by_commit
-                                    .insert(id, selected_metadata);
+                                    .first_parent_metadata_by_selected_commit_id
+                                    .insert(id, first_parent_metadata);
                                 if seen_selected_commit_ids.insert(id) {
                                     traversal.ordered_selected_commit_ids.push(id);
                                 }
@@ -323,7 +341,7 @@ fn traverse_graph_for_planning<M: RefMetadata>(
     Ok(traversal)
 }
 
-/// Pick repository-backed first-parent metadata for a selected commit.
+/// Returns first-parent metadata if `commit_id` is selected.
 ///
 /// This intentionally reads the commit object from the editor's in-memory
 /// repository instead of inferring first-parent semantics from the step graph.
@@ -332,11 +350,11 @@ fn traverse_graph_for_planning<M: RefMetadata>(
 /// commit DAG that owns the trees and SHAs being merged, so callers are
 /// expected to keep the editor step graph aligned with that in-memory
 /// repository topology.
-fn selected_metadata_for_traversed_pick<M: RefMetadata>(
+fn get_first_parent_metadata<M: RefMetadata>(
     editor: &Editor<'_, '_, M>,
     commit_id: gix::ObjectId,
     selected_commit_ids: &HashSet<gix::ObjectId>,
-) -> Result<Option<SelectedCommitPlanningMetadata>> {
+) -> Result<Option<FirstParentMetadata>> {
     if !selected_commit_ids.contains(&commit_id) {
         return Ok(None);
     }
@@ -346,7 +364,7 @@ fn selected_metadata_for_traversed_pick<M: RefMetadata>(
     let selected_first_parent_id =
         first_parent_id.filter(|parent_id| selected_commit_ids.contains(parent_id));
 
-    Ok(Some(SelectedCommitPlanningMetadata {
+    Ok(Some(FirstParentMetadata {
         first_parent_id,
         selected_first_parent_id,
     }))
@@ -354,16 +372,16 @@ fn selected_metadata_for_traversed_pick<M: RefMetadata>(
 
 /// Get the base tree ID to use for the merger of the given commit.
 ///
-/// This function is reponsible for determining the base in the following way:
-/// 1. If the first parent of the commit is an ancestor of the target commit, we return its tree.
-/// 2. If the first parent of the commit is part of the selected commits but is not an ancestor of
-///    the target commit, we check the second parent. We continue until we find a parent that's either
-///    not in the selected commits or is an ancestor of the target commit.
-/// 3. If there is no parent, we return an empty tree.
+/// The base tree ID is obtained by following the first parent link until a
+/// non-selected commit or a target ancestor is encountered; the base tree ID is
+/// thus the tree of that commit.
+///
+/// If the first parent link cannot be followed due to a commit not having any
+/// parents, the empty tree is returned.
 fn base_tree_id_for_emitted_tip<M: RefMetadata>(
     editor: &Editor<'_, '_, M>,
     tip_commit_id: gix::ObjectId,
-    selected_metadata_by_commit: &HashMap<gix::ObjectId, SelectedCommitPlanningMetadata>,
+    selected_metadata_by_commit: &HashMap<gix::ObjectId, FirstParentMetadata>,
     target_ancestor_commit_ids: &HashSet<gix::ObjectId>,
 ) -> Result<gix::ObjectId> {
     let mut current_commit_id = tip_commit_id;

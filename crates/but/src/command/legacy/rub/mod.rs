@@ -132,8 +132,8 @@ pub(crate) struct UnassignedToStackOperation {
 /// Represents undoing a commit.
 #[derive(Debug)]
 pub(crate) struct CommitToUnassignedOperation {
-    /// The commit id to undo.
-    pub(crate) oid: gix::ObjectId,
+    /// The commits to undo.
+    pub(crate) commits: NonEmpty<gix::ObjectId>,
 }
 
 /// Represents undoing a commit to a stack.
@@ -589,11 +589,16 @@ impl CommitToUnassignedOperation {
         if let Some(out) = out.for_human() {
             let t = theme::get();
             let repo = ctx.repo.get()?;
-            writeln!(
-                out,
-                "Uncommitted {}",
-                t.cli_id.paint(shorten_object_id(&repo, self.oid))
-            )?;
+            if self.commits.len() == 1 {
+                writeln!(
+                    out,
+                    "Uncommitted {}",
+                    t.cli_id
+                        .paint(shorten_object_id(&repo, *self.commits.first()))
+                )?;
+            } else {
+                writeln!(out, "Uncommitted {} commits", self.commits.len())?;
+            }
         } else if let Some(out) = out.for_json() {
             out.write_value(serde_json::json!({"ok": true}))?;
         }
@@ -602,7 +607,12 @@ impl CommitToUnassignedOperation {
 
     /// Executes `UndoCommit` by uncommitting all changes from the selected commit.
     pub(crate) fn execute_inner(&self, ctx: &mut Context) -> anyhow::Result<UncommitResult> {
-        but_api::commit::uncommit::commit_uncommit(ctx, vec![self.oid], None, DryRun::No)
+        but_api::commit::uncommit::commit_uncommit(
+            ctx,
+            self.commits.iter().copied().collect(),
+            None,
+            DryRun::No,
+        )
     }
 }
 
@@ -945,6 +955,33 @@ impl<'a> RubOperation<'a> {
     }
 }
 
+fn hunk_assignments_from_uncommitted_sources<'a>(
+    sources: &NonEmpty<&'a CliId>,
+) -> Option<NonEmpty<&'a HunkAssignment>> {
+    let mut hunk_assignments = Vec::new();
+    for source in sources {
+        let CliId::Uncommitted(uncommitted) = source else {
+            return None;
+        };
+        hunk_assignments.extend(uncommitted.hunk_assignments.iter());
+    }
+    NonEmpty::from_vec(hunk_assignments)
+}
+
+fn commits_from_sources(sources: &NonEmpty<&CliId>) -> Option<NonEmpty<gix::ObjectId>> {
+    let commits = sources
+        .iter()
+        .map(|source| {
+            if let CliId::Commit { commit_id, .. } = source {
+                Some(*commit_id)
+            } else {
+                None
+            }
+        })
+        .collect::<Option<Vec<_>>>()?;
+    NonEmpty::from_vec(commits)
+}
+
 /// Determines the operation to perform for a given source and target combination.
 /// Returns `Some(operation)` if the combination is valid, `None` otherwise.
 ///
@@ -1108,7 +1145,9 @@ pub(crate) fn route_operation<'a>(
             )),
             // Commit -> *
             (Commit { commit_id, .. }, Unassigned { .. }) => Some(
-                RubOperation::CommitToUnassigned(CommitToUnassignedOperation { oid: *commit_id }),
+                RubOperation::CommitToUnassigned(CommitToUnassignedOperation {
+                    commits: NonEmpty::new(*commit_id),
+                }),
             ),
             (
                 Commit {
@@ -1205,32 +1244,58 @@ pub(crate) fn route_operation<'a>(
             Commit {
                 commit_id: target_commit_id,
                 id: _,
-            } => sources
-                .iter()
-                .map(|source| match source {
-                    Commit { commit_id, id: _ } => Some(*commit_id),
-                    Uncommitted(..)
-                    | PathPrefix { .. }
-                    | CommittedFile { .. }
-                    | Branch { .. }
-                    | Unassigned { .. }
-                    | Stack { .. } => None,
-                })
-                .collect::<Option<Vec<_>>>()
-                .and_then(NonEmpty::from_vec)
-                .map(|commits| {
-                    RubOperation::SquashCommits(SquashCommitsOperation {
+            } => {
+                if let Some(commits) = sources
+                    .iter()
+                    .map(|source| match source {
+                        Commit { commit_id, id: _ } => Some(*commit_id),
+                        Uncommitted(..)
+                        | PathPrefix { .. }
+                        | CommittedFile { .. }
+                        | Branch { .. }
+                        | Unassigned { .. }
+                        | Stack { .. } => None,
+                    })
+                    .collect::<Option<Vec<_>>>()
+                    .and_then(NonEmpty::from_vec)
+                {
+                    Some(RubOperation::SquashCommits(SquashCommitsOperation {
                         sources: commits,
                         destination: *target_commit_id,
                         how_to_combine_messages,
+                    }))
+                } else {
+                    hunk_assignments_from_uncommitted_sources(&sources).map(|hunk_assignments| {
+                        RubOperation::UncommittedToCommit(UncommittedToCommitOperation {
+                            hunk_assignments,
+                            description: "hunk(s)".to_string(),
+                            oid: *target_commit_id,
+                        })
+                    })
+                }
+            }
+            Unassigned { .. } => hunk_assignments_from_uncommitted_sources(&sources)
+                .map(|hunk_assignments| {
+                    RubOperation::UnassignUncommitted(UnassignUncommittedOperation {
+                        hunk_assignments,
+                        description: "hunk(s)".to_string(),
+                    })
+                })
+                .or_else(|| {
+                    commits_from_sources(&sources).map(|commits| {
+                        RubOperation::CommitToUnassigned(CommitToUnassignedOperation { commits })
                     })
                 }),
-            Uncommitted(..)
-            | PathPrefix { .. }
-            | CommittedFile { .. }
-            | Branch { .. }
-            | Unassigned { .. }
-            | Stack { .. } => None,
+            Stack { stack_id, .. } => {
+                hunk_assignments_from_uncommitted_sources(&sources).map(|hunk_assignments| {
+                    RubOperation::UncommittedToStack(UncommittedToStackOperation {
+                        hunk_assignments,
+                        description: "hunk(s)".to_string(),
+                        stack_id: *stack_id,
+                    })
+                })
+            }
+            Uncommitted(..) | PathPrefix { .. } | CommittedFile { .. } | Branch { .. } => None,
         }
     }
 }
@@ -1933,6 +1998,8 @@ mod tests {
     use bstr::BString;
     use nonempty::NonEmpty;
 
+    use crate::id::UNASSIGNED;
+
     use super::*;
 
     // Helper to create test CliIds
@@ -2493,5 +2560,23 @@ mod tests {
             Some(RubOperation::UnassignedToStack(..)) => {}
             _ => panic!("Expected UnassignedToStack variant"),
         }
+    }
+
+    #[test]
+    fn uncommit_multiple_commits() {
+        let commit = commit_id();
+        let commits = NonEmpty::from_vec(Vec::from([&commit, &commit, &commit])).unwrap();
+        let unassigned = CliId::Unassigned {
+            id: UNASSIGNED.to_owned(),
+        };
+        let op =
+            route_operation(commits, &unassigned, MessageCombinationStrategy::KeepBoth).unwrap();
+        let RubOperation::CommitToUnassigned(CommitToUnassignedOperation {
+            commits: routed_commits,
+        }) = op
+        else {
+            panic!("unexpected op: {op:?}");
+        };
+        assert_eq!(routed_commits.len(), 3);
     }
 }

@@ -1,7 +1,7 @@
 import { Operand, operandEquals } from "#ui/operands.ts";
 import { getOperationSource, pointerTransferOperationMode } from "#ui/outline/mode.ts";
 import styles from "./OperationSourceC.module.css";
-import { operationSourceLabel } from "./operationSourceLabel.ts";
+import { operandLabel } from "./operandLabel.ts";
 import { headInfoQueryOptions } from "#ui/api/queries.ts";
 import { classes } from "#ui/components/classes.ts";
 import { projectActions, selectProjectOutlineModeState } from "#ui/projects/state.ts";
@@ -47,7 +47,7 @@ export const OperationSourceC: FC<
 				render: ({ container }) => {
 					if (!headInfo) return;
 					const root = createRoot(container);
-					root.render(<DragPreview>{operationSourceLabel({ source, headInfo })}</DragPreview>);
+					root.render(<DragPreview>{operandLabel({ operand: source, headInfo })}</DragPreview>);
 					return () => {
 						root.unmount();
 					};
@@ -69,6 +69,7 @@ export const OperationSourceC: FC<
 			}),
 		);
 	});
+	const getInitialData = useEffectEvent((): DragData => ({ source }));
 
 	useEffect(() => {
 		const element = dragRef.current;
@@ -78,7 +79,7 @@ export const OperationSourceC: FC<
 			element,
 			// Prevent false positives when users drag to select text in the input field.
 			canDrag,
-			getInitialData: (): DragData => ({ source }),
+			getInitialData,
 			onGenerateDragPreview,
 			onDragStart,
 			onDrop: ({ location }) => {
@@ -87,7 +88,7 @@ export const OperationSourceC: FC<
 				dispatch(projectActions.cancelMode({ projectId }));
 			},
 		});
-	}, [dispatch, projectId, source]);
+	}, [dispatch, projectId]);
 
 	const operationSource = getOperationSource(outlineMode);
 	const isActiveSource = operationSource ? operandEquals(operationSource, source) : false;

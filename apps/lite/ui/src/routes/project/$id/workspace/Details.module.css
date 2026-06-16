@@ -53,7 +53,15 @@
 }
 
 .diffContents {
+	--diffs-bg-selection-number-override: color-mix(var(--fill-gray-bg) 60%, transparent);
+	--diffs-bg-selection-override: transparent;
+
 	overflow: auto;
+	user-select: text;
+
+	[data-selection-scope]:focus-within & {
+		--diffs-bg-selection-number-override: var(--fill-gray-bg);
+	}
 }
 
 .avatar {
@@ -95,11 +103,12 @@
 	font-size: 13px;
 	/* text pre */
 	white-space: pre-line;
+	user-select: text;
 }
 
 .fileHeader {
 	display: grid;
-	grid-template-columns: 1fr auto auto;
+	grid-template-columns: 1fr auto auto auto;
 	align-items: center;
 	justify-content: space-between;
 	padding: 8px;

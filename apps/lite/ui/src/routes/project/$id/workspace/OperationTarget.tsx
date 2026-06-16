@@ -1,4 +1,4 @@
-import { type Operand } from "#ui/operands.ts";
+import { operandEquals, type Operand } from "#ui/operands.ts";
 import { parseDragData } from "./OperationSourceC.tsx";
 import styles from "./OperationTarget.module.css";
 import { OperationTooltip } from "./OperationTooltip.tsx";
@@ -32,9 +32,9 @@ const getOperationTypeFromData = (data: DropData): OperationType | null => {
 
 	return Match.value(instruction.operation).pipe(
 		Match.withReturnType<OperationType>(),
-		Match.when("combine", () => "squash"),
-		Match.when("reorder-before", () => "moveAbove"),
-		Match.when("reorder-after", () => "moveBelow"),
+		Match.when("combine", () => "into"),
+		Match.when("reorder-before", () => "above"),
+		Match.when("reorder-after", () => "below"),
 		Match.exhaustive,
 	);
 };
@@ -56,16 +56,16 @@ const useOperationDropTarget = ({
 		const dragData = parseDragData(source.data);
 		if (!dragData) return {};
 
-		const { squash, moveAbove, moveBelow } = getOperations(dragData.source, target);
+		const { into, above, below } = getOperations(dragData.source, target);
 		return attachInstruction(
 			{},
 			{
 				input,
 				element,
 				operations: {
-					"reorder-before": moveAbove ? "available" : "not-available",
-					"reorder-after": moveBelow ? "available" : "not-available",
-					combine: squash ? "available" : "not-available",
+					"reorder-before": above ? "available" : "not-available",
+					"reorder-after": below ? "available" : "not-available",
+					combine: into ? "available" : "not-available",
 				},
 			},
 		);
@@ -129,7 +129,7 @@ const useOperationDropTarget = ({
 				}
 
 				dispatch(projectActions.exitMode({ projectId }));
-				runOperation(operation);
+				runOperation(operation.operation);
 			},
 		});
 	}, [dispatch, projectId, runOperation, target]);
@@ -151,7 +151,7 @@ export const OperationTarget: FC<
 
 	const insertTargetOperationType = Match.value(outlineMode).pipe(
 		Match.tag("Transfer", ({ value: mode }) =>
-			isSelected && (mode.operationType === "moveAbove" || mode.operationType === "moveBelow")
+			isSelected && (mode.operationType === "above" || mode.operationType === "below")
 				? mode.operationType
 				: null,
 		),
@@ -161,15 +161,8 @@ export const OperationTarget: FC<
 	const isMainTargetActive = Match.value(outlineMode).pipe(
 		Match.tags({
 			Absorb: () => isAbsorptionTarget,
-			Transfer: ({ value: mode }) => isSelected && mode.operationType === "squash",
-		}),
-		Match.orElse(() => false),
-	);
-
-	const isMainTargetTooltipActive = Match.value(outlineMode).pipe(
-		Match.tags({
-			Absorb: () => isSelected,
-			Transfer: () => isMainTargetActive,
+			Transfer: ({ value: mode }) =>
+				isSelected && mode.operationType === "into" && !operandEquals(mode.source, target),
 		}),
 		Match.orElse(() => false),
 	);
@@ -186,7 +179,7 @@ export const OperationTarget: FC<
 		<div className={styles.target}>
 			<OperationTooltip
 				target={target}
-				isActive={isMainTargetTooltipActive}
+				isActive={isMainTargetActive}
 				outlineMode={outlineMode}
 				render={targetEl}
 			/>
@@ -201,8 +194,8 @@ export const OperationTarget: FC<
 						pipe(
 							insertTargetOperationType,
 							Match.value,
-							Match.when("moveAbove", () => styles.insertionTargetAbove),
-							Match.when("moveBelow", () => styles.insertionTargetBelow),
+							Match.when("above", () => styles.insertionTargetAbove),
+							Match.when("below", () => styles.insertionTargetBelow),
 							Match.exhaustive,
 						),
 					)}

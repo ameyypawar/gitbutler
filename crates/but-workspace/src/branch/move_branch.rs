@@ -71,6 +71,9 @@ pub(super) mod function {
         };
 
         let mut ws_meta = workspace.metadata.clone();
+        if let Some(ws_meta) = ws_meta.as_mut() {
+            ws_meta.set_project_meta(workspace.graph.project_meta.clone());
+        }
 
         let (source_stack, subject_segment) = source;
 
@@ -127,6 +130,7 @@ pub(super) mod function {
             subject_delimiter,
             but_rebase::graph_rebase::mutate::InsertSide::Above,
             Some(selectors),
+            but_rebase::graph_rebase::mutate::ParentReparentingOrder::Prepend,
         )?;
 
         // Update the workspace meta in order to create a new stack containing the
@@ -166,6 +170,10 @@ pub(super) mod function {
         subject_branch_name: &FullNameRef,
         target_branch_name: &FullNameRef,
     ) -> anyhow::Result<Outcome<'ws, 'meta, M>> {
+        if subject_branch_name == target_branch_name {
+            bail!("Cannot move branch {subject_branch_name} onto itself");
+        }
+
         let successful_rebase = editor.rebase()?;
         let workspace = successful_rebase.overlayed_graph()?.into_workspace()?;
         let mut editor = successful_rebase.into_editor();
@@ -191,6 +199,9 @@ pub(super) mod function {
         };
 
         let mut ws_meta = workspace.metadata.clone();
+        if let Some(ws_meta) = ws_meta.as_mut() {
+            ws_meta.set_project_meta(workspace.graph.project_meta.clone());
+        }
 
         let (source_stack, subject_segment) = source;
         let (_, target_segment) = destination;

@@ -7,19 +7,18 @@ import {
 	commitDetailsWithLineStatsQueryOptions,
 	treeChangeDiffsQueryOptions,
 } from "#ui/api/queries.ts";
-import { decodeRefName } from "#ui/api/ref-name.ts";
+import { decodeBytes } from "#ui/api/bytes.ts";
 import { commitBody, commitTitle, shortCommitId } from "#ui/commit.ts";
 import {
 	branchFileParent,
-	branchOperand,
 	changesFileParent,
-	changesSectionOperand,
 	commitFileParent,
-	commitOperand,
+	FileOperand,
 	fileOperand,
+	hunkOperand,
 	operandIdentityKey,
-	type CommitOperand,
-	type FileOperand,
+	type FileParent,
+	type HunkOperand,
 	type Operand,
 } from "#ui/operands.ts";
 import { projectActions, selectProjectFilesVisible } from "#ui/projects/state.ts";
@@ -29,7 +28,7 @@ import { TooltipPopup } from "#ui/components/Tooltip.tsx";
 import { OperationSourceC } from "#ui/routes/project/$id/workspace/OperationSourceC.tsx";
 import { useAppDispatch, useAppSelector } from "#ui/store.ts";
 import { classes } from "#ui/components/classes.ts";
-import { Tooltip } from "@base-ui/react";
+import { Toolbar, Tooltip } from "@base-ui/react";
 import type {
 	CommitDetails,
 	DiffHunk,
@@ -41,26 +40,37 @@ import type {
 import {
 	type CodeViewDiffItem,
 	type CodeView as CodeViewClass,
+	type CodeViewLineSelection,
 	parsePatchFiles,
 } from "@pierre/diffs";
 import { CodeView, type CodeViewHandle } from "@pierre/diffs/react";
 import { useSuspenseQueries } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
-import { Array, Hash, Match } from "effect";
+import { Hash, identity, Match } from "effect";
 import { ComponentProps, FC, type RefObject, Suspense, useDeferredValue, useRef } from "react";
 import styles from "./Details.module.css";
 import { workspaceHotkeys } from "#ui/hotkeys.ts";
-import { SelectionScope } from "#ui/selection-scopes.ts";
+import {
+	type SelectionScope,
+	useDiffSelection,
+	useNavigationIndexHotkeys,
+} from "#ui/selection-scopes.ts";
 import {
 	FilesTree,
 	changeFileTreeItem,
 	conflictFileTreeItem,
 	type FileTreeItem,
 } from "#ui/routes/project/$id/workspace/FilesTree.tsx";
-import { getDependencyCommitIds, getHunkDependencyDiffsByPath } from "#ui/hunk.ts";
-import { buildNavigationIndex } from "#ui/workspace/navigation-index.ts";
-
-const lineEndingForDiff = (diff: string): string => (diff.includes("\r\n") ? "\r\n" : "\n");
+import {
+	getDependencyCommitIds,
+	getHunkDependencyDiffsByPath,
+	contiguousSelectionByLine,
+	contiguousSelectionsFromHunk,
+	synthesizeFilePatch,
+} from "#ui/hunk.ts";
+import { buildIndexByKey, NavigationIndex } from "#ui/workspace/navigation-index.ts";
+import { showNativeContextMenu, showNativeMenuFromTrigger } from "#ui/native-menu.ts";
+import { useFileMenuItems } from "#ui/routes/project/$id/workspace/useFileMenuItems.ts";
 
 const codeViewItemId = ({ changesetKey, path }: { changesetKey: string; path: string }): string =>
 	`${changesetKey}:${path}`;
@@ -68,29 +78,12 @@ const codeViewItemId = ({ changesetKey, path }: { changesetKey: string; path: st
 const codeViewItemIdPath = ({ changesetKey, id }: { changesetKey: string; id: string }): string =>
 	id.slice(changesetKey.length + 1);
 
-const getScrollTargetId = ({
-	changesetKey,
-	selection,
-}: {
-	changesetKey: string;
-	selection: FileOperand | null;
-}): string | null => (selection ? codeViewItemId({ changesetKey, path: selection.path }) : null);
-
-const getChangesetKey = (selection: Operand): string =>
-	Match.value(selection).pipe(
-		Match.tags({
-			Branch: ({ branchRef }) => decodeRefName(branchRef),
-			ChangesSection: () => "changes",
-			Commit: ({ commitId }) => commitId,
-		}),
-		Match.orElseAbsurd,
-	);
+const hunkOperandIdentityKey = (operand: HunkOperand): string =>
+	operandIdentityKey(hunkOperand(operand));
 
 const getCommitFileTreeItems = ({
-	commit,
 	commitDetails,
 }: {
-	commit: CommitOperand;
 	commitDetails: CommitDetails;
 }): Array<FileTreeItem> => {
 	const conflictedPaths = commitDetails.conflictEntries
@@ -107,10 +100,6 @@ const getCommitFileTreeItems = ({
 	return [
 		...conflictedPaths.map((path) =>
 			conflictFileTreeItem({
-				operand: {
-					parent: commitFileParent(commit),
-					path,
-				},
 				path,
 			}),
 		),
@@ -119,10 +108,7 @@ const getCommitFileTreeItems = ({
 			.map((change) =>
 				changeFileTreeItem({
 					change,
-					operand: {
-						parent: commitFileParent(commit),
-						path: change.path,
-					},
+					path: change.path,
 				}),
 			),
 	];
@@ -142,91 +128,25 @@ const getChangesFileTreeItems = (worktreeChanges: WorktreeChanges): Array<FileTr
 		return changeFileTreeItem({
 			change,
 			dependencyCommitIds,
-			operand: {
-				parent: changesFileParent,
-				path: change.path,
-			},
+			path: change.path,
 		});
 	});
 };
 
-const getBranchFileTreeItems = ({
-	stackId,
-	branchRef,
-	branchDiff,
-}: {
-	stackId: string;
-	branchRef: Array<number>;
-	branchDiff: TreeChanges;
-}): Array<FileTreeItem> =>
+const getBranchFileTreeItems = ({ branchDiff }: { branchDiff: TreeChanges }): Array<FileTreeItem> =>
 	branchDiff.changes.map((change) =>
 		changeFileTreeItem({
 			change,
-			operand: {
-				parent: branchFileParent({ stackId, branchRef }),
-				path: change.path,
-			},
+			path: change.path,
 		}),
-	);
-
-const patchHeaderForChange = (change: TreeChange, lineEnding: string): string =>
-	Match.value(change.status).pipe(
-		Match.when(
-			{ type: "Addition" },
-			() =>
-				[
-					`diff --git a/${change.path} b/${change.path}`,
-					"new file mode 100644",
-					"--- /dev/null",
-					`+++ b/${change.path}`,
-				].join(lineEnding) + lineEnding,
-		),
-
-		Match.when(
-			{ type: "Deletion" },
-			() =>
-				[
-					`diff --git a/${change.path} b/${change.path}`,
-					"deleted file mode 100644",
-					`--- a/${change.path}`,
-					"+++ /dev/null",
-				].join(lineEnding) + lineEnding,
-		),
-
-		Match.when(
-			{ type: "Modification" },
-			() =>
-				[
-					`diff --git a/${change.path} b/${change.path}`,
-					`--- a/${change.path}`,
-					`+++ b/${change.path}`,
-				].join(lineEnding) + lineEnding,
-		),
-
-		Match.when(
-			{ type: "Rename" },
-			({ subject }) =>
-				[
-					`diff --git a/${subject.previousPath} b/${change.path}`,
-					"similarity index 99%",
-					`rename from ${subject.previousPath}`,
-					`rename to ${change.path}`,
-					`--- a/${subject.previousPath}`,
-					`+++ b/${change.path}`,
-				].join(lineEnding) + lineEnding,
-		),
-
-		Match.exhaustive,
 	);
 
 const mkCodeViewItem = (
 	change: TreeChange,
 	changesetKey: string,
 	hunks: Array<DiffHunk>,
-): CodeViewDiffItem | null => {
-	const lineEnding = lineEndingForDiff(hunks[0]?.diff ?? "");
-	const header = patchHeaderForChange(change, lineEnding);
-	const combinedFilePatch = [header, ...hunks.map((hunk) => hunk.diff)].join(lineEnding);
+): CodeViewDiffItem => {
+	const combinedFilePatch = synthesizeFilePatch(change, hunks);
 	const version = Hash.string(combinedFilePatch);
 	const parsed = parsePatchFiles(combinedFilePatch, String(version));
 
@@ -239,46 +159,169 @@ const mkCodeViewItem = (
 	};
 };
 
-const DiffContents: FC<{
+type DiffViewDeps = {
+	fileParent: FileParent;
 	changes: Array<TreeChange>;
-	onViewerFileSelection: (selection: FileOperand) => void;
-	outlineSelection: Operand;
-	projectId: string;
-	viewerRef: RefObject<CodeViewHandle<undefined> | null>;
-}> = ({ changes, onViewerFileSelection, outlineSelection, projectId, viewerRef }) => {
-	const treeChangeDiffs = useSuspenseQueries({
-		queries: changes.map((change) => treeChangeDiffsQueryOptions({ projectId, change })),
-	}).map((result) => result.data);
+	treeChangeDiffs: Array<UnifiedPatch | null>;
+	changesetKey: string;
+};
 
-	const changesetKey = getChangesetKey(outlineSelection);
-	const fileParent = Match.value(outlineSelection).pipe(
-		Match.tags({
-			Branch: ({ branchRef, stackId }) => branchFileParent({ branchRef, stackId }),
-			ChangesSection: () => changesFileParent,
-			Commit: ({ commitId, stackId }) => commitFileParent({ commitId, stackId }),
-		}),
-		Match.orElseAbsurd,
-	);
+type DiffViewFile = {
+	operand: FileOperand;
+	item: CodeViewDiffItem;
+	change: TreeChange;
+	patch: UnifiedPatch | null;
+	hunks: Array<DiffViewHunk>;
+};
 
-	// CodeView only gives us back the CodeViewItem in custom renders, however we need this prior data
-	// hence a reverse map by ID.
-	const itemsMetadataMap = new Map<string, [TreeChange, UnifiedPatch]>();
+type DiffViewHunk = {
+	operand: HunkOperand;
+	selectedLines: CodeViewLineSelection;
+};
 
-	const items = Array.zip(changes, treeChangeDiffs).flatMap(([change, mdiff]) => {
-		if (!mdiff) return [];
+type DiffView = {
+	navigationIndex: NavigationIndex<HunkOperand>;
+	items: Array<CodeViewDiffItem>;
+	fileByItemId: Map<string, DiffViewFile>;
+	fileByPath: Map<string, DiffViewFile>;
+	fileByHunkKey: Map<string, DiffViewFile>;
+	hunkByKey: Map<string, DiffViewHunk>;
+};
 
-		const mitem = Match.value(mdiff).pipe(
-			Match.when({ type: "Patch" }, (patch) =>
-				mkCodeViewItem(change, changesetKey, patch.subject.hunks),
-			),
-			Match.when({ type: "Binary" }, () => mkCodeViewItem(change, changesetKey, [])),
-			Match.orElse(() => null),
+/** Build relationships between our SDK data and Pierre's view. */
+const getDiffView = ({
+	fileParent,
+	changes,
+	treeChangeDiffs,
+	changesetKey,
+}: DiffViewDeps): DiffView => {
+	const navigationIndex: NavigationIndex<HunkOperand> = {
+		items: [],
+		indexByKey: new Map(),
+	};
+
+	const items: Array<CodeViewDiffItem> = [];
+
+	const fileByItemId = new Map<string, DiffViewFile>();
+	const fileByPath = new Map<string, DiffViewFile>();
+	const fileByHunkKey = new Map<string, DiffViewFile>();
+	const hunkByKey = new Map<string, DiffViewHunk>();
+
+	for (const [ci, change] of changes.entries()) {
+		const mdiff = treeChangeDiffs[ci];
+
+		const item = mkCodeViewItem(
+			change,
+			changesetKey,
+			mdiff && "subject" in mdiff && "hunks" in mdiff.subject ? mdiff.subject.hunks : [],
 		);
-		if (!mitem) return [];
 
-		itemsMetadataMap.set(mitem.id, [change, mdiff]);
+		items.push(item);
 
-		return mitem;
+		const file: FileOperand = {
+			parent: fileParent,
+			path: change.path,
+		};
+		const diffViewFile: DiffViewFile = {
+			operand: file,
+			item,
+			change,
+			patch: mdiff ?? null,
+			hunks: [],
+		};
+
+		fileByItemId.set(item.id, diffViewFile);
+		fileByPath.set(change.path, diffViewFile);
+
+		if (mdiff?.type === "Patch")
+			for (const hunk of item.fileDiff.hunks)
+				for (const selection of contiguousSelectionsFromHunk(hunk)) {
+					const hunkOperand: HunkOperand = {
+						parent: file,
+						...selection,
+						isResultOfBinaryToTextConversion: mdiff.subject.isResultOfBinaryToTextConversion,
+					};
+					const hunkKey = hunkOperandIdentityKey(hunkOperand);
+
+					const len = navigationIndex.items.push(hunkOperand);
+					navigationIndex.indexByKey.set(hunkKey, len - 1);
+
+					const diffViewHunk: DiffViewHunk = {
+						operand: hunkOperand,
+						selectedLines: {
+							id: item.id,
+							range: hunkOperand.range,
+						},
+					};
+					diffViewFile.hunks.push(diffViewHunk);
+					fileByHunkKey.set(hunkKey, diffViewFile);
+					hunkByKey.set(hunkKey, diffViewHunk);
+				}
+	}
+
+	return {
+		items,
+		fileByItemId,
+		fileByPath,
+		fileByHunkKey,
+		hunkByKey,
+		navigationIndex,
+	};
+};
+
+const DiffContents: FC<{
+	selectionScopeRef: RefObject<HTMLDivElement | null>;
+	onViewerFileSelection: (selection: string) => void;
+	fileParent: FileParent;
+	changesetKey: string;
+	projectId: string;
+	diffView: DiffView;
+	viewerRef: RefObject<CodeViewHandle<undefined> | null>;
+}> = ({
+	selectionScopeRef,
+	onViewerFileSelection,
+	fileParent,
+	changesetKey,
+	projectId,
+	diffView: { items, navigationIndex, hunkByKey, fileByHunkKey, fileByItemId },
+	viewerRef,
+}) => {
+	const dispatch = useAppDispatch();
+
+	const diffSelection = useDiffSelection(projectId, navigationIndex);
+	const selectedRange = diffSelection
+		? (hunkByKey.get(hunkOperandIdentityKey(diffSelection))?.selectedLines ?? null)
+		: null;
+
+	const selectDiff = (selection: HunkOperand) => {
+		dispatch(projectActions.selectDiff({ projectId, selection }));
+
+		const selectedRange = hunkByKey.get(hunkOperandIdentityKey(selection))?.selectedLines;
+		if (!selectedRange) return;
+
+		viewerRef.current?.scrollTo({
+			type: "range",
+			id: selectedRange.id,
+			range: selectedRange.range,
+			align: "nearest",
+		});
+	};
+
+	useNavigationIndexHotkeys({
+		navigationIndex,
+		projectId,
+		group: "Diff",
+		selectionScope: "diff",
+		select: selectDiff,
+		selection: diffSelection,
+		selectSectionPredicate: (hunk) => {
+			const k = hunkOperandIdentityKey(hunk);
+			// oxlint-disable-next-line typescript/no-non-null-assertion: Absurd.
+			return hunkOperandIdentityKey(fileByHunkKey.get(k)!.hunks[0]!.operand) === k;
+		},
+		ref: selectionScopeRef,
+		getKey: hunkOperandIdentityKey,
+		operationSourceForItem: hunkOperand,
 	});
 
 	const selectFileAtViewportTop = (scrollTop: number, viewer: CodeViewClass<undefined>) => {
@@ -290,10 +333,41 @@ const DiffContents: FC<{
 		// This can happen on very fast scroll.
 		if (activeItem === undefined) return;
 
-		onViewerFileSelection({
-			parent: fileParent,
-			path: codeViewItemIdPath({ changesetKey, id: activeItem.id }),
+		onViewerFileSelection(codeViewItemIdPath({ changesetKey, id: activeItem.id }));
+	};
+
+	// We currently only support selecting contiguous blocks.
+	const handleLinesSelected = (sel: CodeViewLineSelection | null): void => {
+		if (!sel) return void dispatch(projectActions.selectDiff({ projectId, selection: null }));
+
+		const file = fileByItemId.get(sel.id);
+		if (!file) throw new Error("Could not get file by item ID");
+		if (file.patch?.type !== "Patch") throw new Error("File has no patch");
+
+		const side = sel.range.endSide ?? sel.range.side;
+		if (side === undefined) return;
+
+		const selection = contiguousSelectionByLine({
+			hunks: file.item.fileDiff.hunks,
+			// The end range is more reliable in shift+click with preexisting selection scenarios.
+			line: sel.range.end,
+			side,
 		});
+		if (!selection) return;
+
+		dispatch(
+			projectActions.selectDiff({
+				projectId,
+				selection: {
+					parent: {
+						parent: fileParent,
+						path: file.change.path,
+					},
+					...selection,
+					isResultOfBinaryToTextConversion: file.patch.subject.isResultOfBinaryToTextConversion,
+				},
+			}),
+		);
 	};
 
 	return items.length === 0 ? (
@@ -304,20 +378,17 @@ const DiffContents: FC<{
 			renderCustomHeader={(item) => {
 				if (item.type === "file") throw new Error("Only diff items may be rendered");
 
-				const path = itemsMetadataMap.get(item.id)?.[0].path;
+				const file = fileByItemId.get(item.id);
 
 				// CodeView may briefly hold onto stale snapshots of our data.
-				if (path === undefined) return <div style={{ height: 38 }} />;
+				if (!file) return <div style={{ height: 38 }} />;
 
 				return (
 					<DiffFileHeader
 						projectId={projectId}
 						item={item}
-						operand={fileOperand({
-							parent: fileParent,
-							path,
-						})}
-						path={path}
+						operand={file.operand}
+						change={file.change}
 						hasDiff={item.fileDiff.hunks.length !== 0}
 					/>
 				);
@@ -325,10 +396,13 @@ const DiffContents: FC<{
 			onScroll={selectFileAtViewportTop}
 			className={styles.diffContents}
 			items={items}
+			selectedLines={selectedRange}
+			onSelectedLinesChange={handleLinesSelected}
 			options={{
 				diffStyle: "unified",
 				themeType: "system",
 				stickyHeaders: true,
+				enableLineSelection: true,
 				layout: {
 					paddingTop: 0,
 					// Match --panel-padding.
@@ -362,15 +436,22 @@ const DiffContents: FC<{
 type DiffFileHeaderProps = {
 	projectId: string;
 	item: CodeViewDiffItem;
-	operand: Operand;
-	path: string;
+	operand: FileOperand;
+	change: TreeChange;
 	hasDiff: boolean;
 };
 
 const DiffFileHeader: FC<DiffFileHeaderProps> = (p) => {
-	const lastSepIdx = p.path.lastIndexOf("/");
-	const mpathInit = lastSepIdx !== -1 ? p.path.slice(0, lastSepIdx + 1) : null;
-	const pathLast = lastSepIdx !== -1 ? p.path.slice(lastSepIdx + 1) : p.path;
+	const menuItems = useFileMenuItems({
+		projectId: p.projectId,
+		operand: p.operand,
+		path: p.change.path,
+		change: p.change,
+	});
+
+	const lastSepIdx = p.change.path.lastIndexOf("/");
+	const mpathInit = lastSepIdx !== -1 ? p.change.path.slice(0, lastSepIdx + 1) : null;
+	const pathLast = lastSepIdx !== -1 ? p.change.path.slice(lastSepIdx + 1) : p.change.path;
 
 	const changeType = Match.value(p.item.fileDiff.type).pipe(
 		Match.when("new", () => "Added"),
@@ -381,8 +462,13 @@ const DiffFileHeader: FC<DiffFileHeaderProps> = (p) => {
 	);
 
 	return (
-		<OperationSourceC projectId={p.projectId} source={p.operand}>
-			<header className={classes(styles.fileHeader, !p.hasDiff && styles.lone)}>
+		<OperationSourceC projectId={p.projectId} source={fileOperand(p.operand)}>
+			<header
+				onContextMenu={(event) => {
+					void showNativeContextMenu(event, menuItems);
+				}}
+				className={classes(styles.fileHeader, !p.hasDiff && styles.lone)}
+			>
 				<h4 className={classes("text-13", styles.filePath)}>
 					{mpathInit}
 					<span className={styles.pathLast}>{pathLast}</span>
@@ -392,6 +478,18 @@ const DiffFileHeader: FC<DiffFileHeaderProps> = (p) => {
 					<span className={styles.fileDiffAdded}>+{p.item.fileDiff.additionLines.length}</span>{" "}
 					<span className={styles.fileDiffDeleted}>-{p.item.fileDiff.deletionLines.length}</span>
 				</span>
+
+				<Toolbar.Root aria-label="File actions">
+					<Toolbar.Button
+						aria-label="File menu"
+						onClick={(event) => {
+							void showNativeMenuFromTrigger(event.currentTarget, menuItems);
+						}}
+						className={getButtonClassName({ size: "small", variant: "ghost", iconOnly: true })}
+					>
+						<Icon name="kebab" />
+					</Toolbar.Button>
+				</Toolbar.Root>
 			</header>
 		</OperationSourceC>
 	);
@@ -400,18 +498,12 @@ const DiffFileHeader: FC<DiffFileHeaderProps> = (p) => {
 const Header: FC<{
 	projectId: string;
 	selection: Operand;
-}> = ({ projectId, selection }) => {
-	const dispatch = useAppDispatch();
-	const selectOutlineSource = (source: Operand) => {
-		dispatch(projectActions.selectOutline({ projectId, selection: source }));
-	};
-
-	return Match.value(selection).pipe(
+}> = ({ projectId, selection }) =>
+	Match.value(selection).pipe(
 		Match.tagsExhaustive({
 			Stack: () => null,
-			Branch: ({ stackId, branchRef }) => {
-				const decodedBranchRef = decodeRefName(branchRef);
-				const source = branchOperand({ stackId, branchRef });
+			Branch: ({ branchRef }) => {
+				const decodedBranchRef = decodeBytes(branchRef);
 
 				return (
 					<SuspenseQuery
@@ -423,63 +515,43 @@ const Header: FC<{
 						})}
 					>
 						{({ data: branchDetails }) => (
-							<OperationSourceC
-								projectId={projectId}
-								source={source}
-								onDragStart={() => selectOutlineSource(source)}
-								render={<header className={styles.header} />}
-							>
+							<header className={styles.header}>
 								<h3 className={classes("text-14", "text-semibold")}>{branchDetails.name}</h3>
 								{branchDetails.prNumber != null && (
 									<div className={classes("text-13", "text-bold", styles.pr)}>
 										PR #{branchDetails.prNumber}
 									</div>
 								)}
-							</OperationSourceC>
+							</header>
 						)}
 					</SuspenseQuery>
 				);
 			},
 			ChangesSection: () => (
-				<OperationSourceC
-					projectId={projectId}
-					source={changesSectionOperand}
-					onDragStart={() => selectOutlineSource(changesSectionOperand)}
-					render={<header className={styles.header} />}
-				>
+				<header className={styles.header}>
 					<h3 className={classes("text-14", "text-semibold")}>Changes</h3>
-				</OperationSourceC>
+				</header>
 			),
 			File: () => null,
-			Commit: ({ commitId, stackId }) => {
-				const source = commitOperand({ stackId, commitId });
-
-				return (
-					<SuspenseQuery {...commitDetailsWithLineStatsQueryOptions({ projectId, commitId })}>
-						{({ data: commitDetails }) => (
-							<OperationSourceC
-								projectId={projectId}
-								source={source}
-								onDragStart={() => selectOutlineSource(source)}
-								render={<header className={styles.header} />}
-							>
-								<Icon name="commit" />
-								<h3 className={classes("text-14", "text-semibold")}>
-									{commitTitle(commitDetails.commit.message)}
-									{commitDetails.commit.hasConflicts && " ⚠️"}
-								</h3>
-								<span className={classes("text-13", styles.commitMeta)}>
-									#{shortCommitId(commitDetails.commit.id)}
-								</span>
-							</OperationSourceC>
-						)}
-					</SuspenseQuery>
-				);
-			},
+			Commit: ({ commitId }) => (
+				<SuspenseQuery {...commitDetailsWithLineStatsQueryOptions({ projectId, commitId })}>
+					{({ data: commitDetails }) => (
+						<header className={styles.header}>
+							<Icon name="commit" />
+							<h3 className={classes("text-14", "text-semibold")}>
+								{commitTitle(commitDetails.commit.message) ?? "(no message)"}
+								{commitDetails.commit.hasConflicts && " ⚠️"}
+							</h3>
+							<span className={classes("text-13", styles.commitMeta)}>
+								#{shortCommitId(commitDetails.commit.id)}
+							</span>
+						</header>
+					)}
+				</SuspenseQuery>
+			),
 			Hunk: () => null,
 		}),
 	);
-};
 
 const FilesToggle: FC = () => {
 	const { id: projectId } = useParams({ from: "/project/$id/workspace" });
@@ -549,7 +621,7 @@ const CommitDetailsContent: FC<{
 				hour: "2-digit",
 				minute: "2-digit",
 				hour12: false,
-			}).format(commitDetails.commit.createdAt);
+			}).format(commitDetails.commit.authoredAt);
 
 			const body = commitBody(commitDetails.commit.message);
 
@@ -587,26 +659,59 @@ const Diff: FC<{
 	changes: Array<TreeChange>;
 	filesVisible: boolean;
 	filesItems: Array<FileTreeItem>;
-	onFileSelection: (selection: FileOperand) => void;
-	onViewerFileSelection: (selection: FileOperand) => void;
+	onFileSelection: (selection: string) => void;
 	outlineSelection: Operand;
 	projectId: string;
-	viewerRef: RefObject<CodeViewHandle<undefined> | null>;
-}> = ({
-	changes,
-	filesVisible,
-	filesItems,
-	onFileSelection,
-	onViewerFileSelection,
-	outlineSelection,
-	projectId,
-	viewerRef,
-}) => {
-	const files = filesItems.map((item) => item.operand);
+}> = ({ changes, filesVisible, filesItems, onFileSelection, outlineSelection, projectId }) => {
+	const selectionScopeRef = useRef<HTMLDivElement>(null);
+	const viewerRef = useRef<CodeViewHandle<undefined>>(null);
+	const dispatch = useAppDispatch();
+	const files = filesItems.map((item) => item.path);
+	const filesIndexByKey = buildIndexByKey(files, identity);
 
-	const navigationIndex = buildNavigationIndex(files, (file) =>
-		operandIdentityKey(fileOperand(file)),
+	const changesetKey = Match.value(outlineSelection).pipe(
+		Match.tags({
+			Branch: ({ branchRef }) => decodeBytes(branchRef),
+			ChangesSection: () => "changes",
+			Commit: ({ commitId }) => commitId,
+		}),
+		Match.orElseAbsurd,
 	);
+	const fileParent = Match.value(outlineSelection).pipe(
+		Match.tags({
+			Branch: ({ branchRef, stackId }) => branchFileParent({ branchRef, stackId }),
+			ChangesSection: () => changesFileParent,
+			Commit: ({ commitId, stackId }) => commitFileParent({ commitId, stackId }),
+		}),
+		Match.orElseAbsurd,
+	);
+
+	const treeChangeDiffs = useSuspenseQueries({
+		queries: changes.map((change) => treeChangeDiffsQueryOptions({ projectId, change })),
+	}).map((result) => result.data);
+
+	const diffView = getDiffView({
+		fileParent,
+		changes,
+		treeChangeDiffs,
+		changesetKey,
+	});
+
+	const selectFileAndNavigateDiff = (selection: string) => {
+		onFileSelection(selection);
+
+		dispatch(
+			projectActions.selectDiff({
+				projectId,
+				selection: diffView.fileByPath.get(selection)?.hunks[0]?.operand ?? null,
+			}),
+		);
+
+		viewerRef.current?.scrollTo({
+			type: "item",
+			id: codeViewItemId({ changesetKey, path: selection }),
+		});
+	};
 
 	return (
 		<div className={classes(styles.diff, filesVisible && styles.diffWithFiles)}>
@@ -616,10 +721,11 @@ const Diff: FC<{
 					data-selection-scope
 					tabIndex={0}
 					className={classes(styles.diffFiles, uiStyles.scrollerWithSeparator)}
-					onFileSelection={onFileSelection}
+					onFileSelection={selectFileAndNavigateDiff}
 					projectId={projectId}
 					items={filesItems}
-					navigationIndex={navigationIndex}
+					navigationIndex={{ items: files, indexByKey: filesIndexByKey }}
+					fileParent={fileParent}
 				/>
 			)}
 
@@ -629,16 +735,17 @@ const Diff: FC<{
 				// oxlint-disable-next-line jsx_a11y/no-noninteractive-tabindex -- Revisit this when we add hunk/line selection.
 				tabIndex={0}
 				className={styles.diffContentsContainer}
+				ref={selectionScopeRef}
 			>
-				<Suspense fallback={<p className="text-13">Loading diff…</p>}>
-					<DiffContents
-						changes={changes}
-						onViewerFileSelection={onViewerFileSelection}
-						outlineSelection={outlineSelection}
-						projectId={projectId}
-						viewerRef={viewerRef}
-					/>
-				</Suspense>
+				<DiffContents
+					onViewerFileSelection={onFileSelection}
+					fileParent={fileParent}
+					changesetKey={changesetKey}
+					projectId={projectId}
+					diffView={diffView}
+					selectionScopeRef={selectionScopeRef}
+					viewerRef={viewerRef}
+				/>
 			</div>
 		</div>
 	);
@@ -658,26 +765,11 @@ export const Details: FC<
 }) => {
 	const { id: projectId } = useParams({ from: "/project/$id/workspace" });
 	const dispatch = useAppDispatch();
-	const viewerRef = useRef<CodeViewHandle<undefined>>(null);
 	const filesVisible = useAppSelector((state) => selectProjectFilesVisible(state, projectId));
 	const outlineSelection = useDeferredValue(urgentOutlineSelection);
 
-	const selectFile = (selection: FileOperand) => {
+	const selectFile = (selection: string) => {
 		dispatch(projectActions.selectFiles({ projectId, selection }));
-	};
-
-	const selectFileAndScrollDiff = (selection: FileOperand) => {
-		if (!outlineSelection) return;
-
-		selectFile(selection);
-
-		const scrollTargetId = getScrollTargetId({
-			changesetKey: getChangesetKey(outlineSelection),
-			selection,
-		});
-		if (scrollTargetId === null) return;
-
-		viewerRef.current?.scrollTo({ type: "item", id: scrollTargetId });
 	};
 
 	if (!outlineSelection || outlineSelection._tag === "Stack") return;
@@ -723,11 +815,9 @@ export const Details: FC<
 							changes={changes}
 							filesVisible={filesVisible}
 							filesItems={filesItems}
-							onFileSelection={selectFileAndScrollDiff}
-							onViewerFileSelection={selectFile}
+							onFileSelection={selectFile}
 							outlineSelection={outlineSelection}
 							projectId={projectId}
-							viewerRef={viewerRef}
 						/>
 					);
 					return Match.value(outlineSelection).pipe(
@@ -741,7 +831,7 @@ export const Details: FC<
 								{({ data: commitDetails }) =>
 									render({
 										changes: commitDetails.changes,
-										filesItems: getCommitFileTreeItems({ commit, commitDetails }),
+										filesItems: getCommitFileTreeItems({ commitDetails }),
 									})
 								}
 							</SuspenseQuery>
@@ -756,14 +846,14 @@ export const Details: FC<
 								}
 							</SuspenseQuery>
 						)),
-						Match.tag("Branch", ({ stackId, branchRef }) => (
+						Match.tag("Branch", ({ branchRef }) => (
 							<SuspenseQuery
-								{...branchDiffQueryOptions({ projectId, branch: decodeRefName(branchRef) })}
+								{...branchDiffQueryOptions({ projectId, branch: decodeBytes(branchRef) })}
 							>
 								{({ data: branchDiff }) =>
 									render({
 										changes: branchDiff.changes,
-										filesItems: getBranchFileTreeItems({ stackId, branchRef, branchDiff }),
+										filesItems: getBranchFileTreeItems({ branchDiff }),
 									})
 								}
 							</SuspenseQuery>

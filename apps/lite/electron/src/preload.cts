@@ -1,12 +1,16 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { LiteElectronApi, WatcherSubscribeResult } from "./ipc";
+import type { LiteElectronApi, UpdateBranchNameResult, WatcherSubscribeResult } from "./ipc";
 import type { UpdateDownloadedEvent } from "electron-updater";
 import type {
 	CommitAbsorption,
 	ApplyOutcome,
+	BranchCheckoutResult,
+	BranchCreateResult,
 	BranchDetails,
 	BranchListing,
 	CommitDetails,
+	DiffSpec,
+	Editor,
 	ProjectForFrontend,
 	PushResult,
 	RefInfo,
@@ -25,6 +29,7 @@ import type {
 	WorkspaceState,
 	UncommitResult,
 	Snapshot,
+	AskpassPromptEvent,
 } from "@gitbutler/but-sdk";
 
 /**
@@ -46,7 +51,20 @@ const api: LiteElectronApi = {
 		ipcRenderer.invoke("workspace:absorption-plan", params) as Promise<Array<CommitAbsorption>>,
 	absorb: (params) => ipcRenderer.invoke("workspace:absorb", params) as Promise<number>,
 	apply: (params) => ipcRenderer.invoke("workspace:apply", params) as Promise<ApplyOutcome>,
+	onAskpassPrompt: (callback) => {
+		const listener = (_event: Electron.IpcRendererEvent, payload: AskpassPromptEvent) => {
+			callback(payload);
+		};
+		ipcRenderer.on("askpass:prompt", listener);
+		return () => ipcRenderer.removeListener("askpass:prompt", listener);
+	},
+	submitAskpassPromptResponse: (params) =>
+		ipcRenderer.invoke("askpass:submit-response", params) as Promise<void>,
 	assignHunk: (params) => ipcRenderer.invoke("workspace:assign-hunk", params) as Promise<void>,
+	branchCheckoutNew: (params) =>
+		ipcRenderer.invoke("workspace:branch-checkout-new", params) as Promise<BranchCheckoutResult>,
+	branchCreate: (params) =>
+		ipcRenderer.invoke("workspace:branch-create", params) as Promise<BranchCreateResult>,
 	branchDetails: (params) =>
 		ipcRenderer.invoke("workspace:branch-details", params) as Promise<BranchDetails>,
 	branchDiff: (params) =>
@@ -61,11 +79,15 @@ const api: LiteElectronApi = {
 		ipcRenderer.invoke("workspace:commit-create", params) as Promise<CommitCreateResult>,
 	commitDiscard: (params) =>
 		ipcRenderer.invoke("workspace:commit-discard", params) as Promise<CommitDiscardResult>,
+	commitDiscardChanges: (params) =>
+		ipcRenderer.invoke("workspace:commit-discard-changes", params) as Promise<MoveChangesResult>,
 	commitDetailsWithLineStats: (params) =>
 		ipcRenderer.invoke(
 			"workspace:commit-details-with-line-stats",
 			params,
 		) as Promise<CommitDetails>,
+	discardWorktreeChanges: (params) =>
+		ipcRenderer.invoke("workspace:discard-worktree-changes", params) as Promise<Array<DiffSpec>>,
 	commitInsertBlank: (params) =>
 		ipcRenderer.invoke("workspace:commit-insert-blank", params) as Promise<CommitInsertBlankResult>,
 	commitMove: (params) =>
@@ -93,13 +115,15 @@ const api: LiteElectronApi = {
 		ipcRenderer.invoke("workspace:list-branches", projectId, filter) as Promise<
 			Array<BranchListing>
 		>,
+	listEditors: () => ipcRenderer.invoke("workspace:list-editors") as Promise<Array<Editor>>,
 	listProjects: () => ipcRenderer.invoke("projects:list") as Promise<Array<ProjectForFrontend>>,
 	moveBranch: (params) =>
 		ipcRenderer.invoke("workspace:move-branch", params) as Promise<MoveBranchResult>,
+	openInEditor: (params) => ipcRenderer.invoke("workspace:open-in-editor", params) as Promise<void>,
 	pathJoin: (path, ...paths) =>
 		ipcRenderer.invoke("lite:path-join", path, ...paths) as Promise<string>,
 	updateBranchName: (params) =>
-		ipcRenderer.invoke("workspace:update-branch-name", params) as Promise<void>,
+		ipcRenderer.invoke("workspace:update-branch-name", params) as Promise<UpdateBranchNameResult>,
 	tearOffBranch: (params) =>
 		ipcRenderer.invoke("workspace:tear-off-branch", params) as Promise<MoveBranchResult>,
 	peelRestoreSnapshot: (params) =>

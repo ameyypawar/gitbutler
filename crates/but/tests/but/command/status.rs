@@ -51,7 +51,7 @@ fn unborn() -> anyhow::Result<()> {
         .assert()
         .failure()
         .stderr_eq(snapbox::str![[r#"
-Error: Setup required: No GitButler project found at .
+Error: Setup required: No GitButler project found at . - run `but setup` to configure the project
 
 "#]]);
     Ok(())
@@ -67,7 +67,7 @@ fn first_commit_no_workspace() -> anyhow::Result<()> {
         .assert()
         .failure()
         .stderr_eq(snapbox::str![[r#"
-Error: Setup required: No GitButler project found at .
+Error: Setup required: No GitButler project found at . - run `but setup` to configure the project
 
 "#]]);
 
@@ -178,7 +178,7 @@ fn json_shows_paths_as_strings() -> anyhow::Result<()> {
   "mergeBase": {
     "cliId": "",
     "commitId": "0dc37334a458df421bf67ea806103bf5004845dd",
-    "createdAt": "2000-01-02T00:00:00+00:00",
+    "createdAt": "2000-01-01T00:00:00+00:00",
     "message": "add M/n",
     "authorName": "author",
     "authorEmail": "author@example.com",
@@ -191,7 +191,7 @@ fn json_shows_paths_as_strings() -> anyhow::Result<()> {
     "latestCommit": {
       "cliId": "",
       "commitId": "0dc37334a458df421bf67ea806103bf5004845dd",
-      "createdAt": "2000-01-02T00:00:00+00:00",
+      "createdAt": "2000-01-01T00:00:00+00:00",
       "message": "add M/n",
       "authorName": "author",
       "authorEmail": "author@example.com",

@@ -9,66 +9,44 @@ import {
 	type CommitMoveChangesBetweenParams,
 	type CommitUncommitChangesParams,
 	type MoveBranchParams,
-	type TearOffBranchParams,
 	CommitSquashParams,
 	CommitUncommitParams,
 } from "#electron/ipc.ts";
 import { headInfoQueryOptions, QueryKey } from "#ui/api/queries.ts";
-import { rejectedChangesToastOptions } from "#ui/operations/rejectedChangesToastOptions.tsx";
+import { rejectedChangesToastOptions } from "#ui/operations/toastOptions.tsx";
 import { DiffSpec, InsertSide, RelativeTo } from "@gitbutler/but-sdk";
 import { Operand, operandEquals, operandFileParent } from "#ui/operands.ts";
 import { resolveDiffSpecs, useResolveDiffSpecs } from "#ui/operations/diff-specs.ts";
-import { decodeRefName } from "#ui/api/ref-name.ts";
+import { decodeBytes } from "#ui/api/bytes.ts";
 import { projectActions } from "#ui/projects/state.ts";
 import { useAppDispatch } from "#ui/store.ts";
 import { useParams } from "@tanstack/react-router";
 import { errorMessageForToast } from "#ui/errors.ts";
 
-/** @public */
-export type CommitAmendOperation = Omit<CommitAmendParams, "dryRun" | "projectId" | "changes"> & {
+type CommitAmendOperation = Omit<CommitAmendParams, "dryRun" | "projectId" | "changes"> & {
 	source: Operand;
 };
-/** @public */
-export type CommitCreateOperation = Omit<CommitCreateParams, "dryRun" | "projectId" | "changes"> & {
+type CommitCreateOperation = Omit<CommitCreateParams, "dryRun" | "projectId" | "changes"> & {
 	source: Operand;
 };
-/** @public */
-export type CommitSplitOperation = Omit<CommitInsertBlankParams, "dryRun" | "projectId"> &
+type CommitSplitOperation = Omit<CommitInsertBlankParams, "dryRun" | "projectId"> &
 	Pick<CommitMoveChangesBetweenParams, "sourceCommitId"> & {
 		source: Operand;
 	};
-/** @public */
-export type CommitMoveOperation = Omit<CommitMoveParams, "dryRun" | "projectId"> & {
-	source: Operand;
-};
-/** @public */
-export type CommitMoveChangesBetweenOperation = Omit<
+type CommitMoveOperation = Omit<CommitMoveParams, "dryRun" | "projectId">;
+type CommitMoveChangesBetweenOperation = Omit<
 	CommitMoveChangesBetweenParams,
 	"dryRun" | "projectId" | "changes"
 > & { source: Operand };
-/** @public */
-export type CommitSquashOperation = Omit<CommitSquashParams, "dryRun" | "projectId"> & {
-	source: Operand;
-};
-/** @public */
-export type CommitUncommitOperation = Omit<CommitUncommitParams, "dryRun" | "projectId"> & {
-	source: Operand;
-};
-/** @public */
-export type CommitUncommitChangesOperation = Omit<
+type CommitSquashOperation = Omit<CommitSquashParams, "dryRun" | "projectId">;
+type CommitUncommitOperation = Omit<CommitUncommitParams, "dryRun" | "projectId">;
+type CommitUncommitChangesOperation = Omit<
 	CommitUncommitChangesParams,
 	"dryRun" | "projectId" | "changes"
 > & { source: Operand };
-/** @public */
-export type MoveBranchOperation = Omit<MoveBranchParams, "dryRun" | "projectId"> & {
-	source: Operand;
-};
-/** @public */
-export type TearOffBranchOperation = Omit<TearOffBranchParams, "dryRun" | "projectId"> & {
-	source: Operand;
-};
+type MoveBranchOperation = Omit<MoveBranchParams, "dryRun" | "projectId">;
 
-export type Operation =
+type Operation =
 	| ({ _tag: "CommitAmend" } & CommitAmendOperation)
 	| ({ _tag: "CommitCreate" } & CommitCreateOperation)
 	| ({ _tag: "CommitSplit" } & CommitSplitOperation)
@@ -77,103 +55,56 @@ export type Operation =
 	| ({ _tag: "CommitSquash" } & CommitSquashOperation)
 	| ({ _tag: "CommitUncommit" } & CommitUncommitOperation)
 	| ({ _tag: "CommitUncommitChanges" } & CommitUncommitChangesOperation)
-	| ({ _tag: "MoveBranch" } & MoveBranchOperation)
-	| ({ _tag: "TearOffBranch" } & TearOffBranchOperation);
+	| ({ _tag: "MoveBranch" } & MoveBranchOperation);
 
-/** @public */
-export const commitAmendOperation = (operation: CommitAmendOperation): Operation => ({
+type OperationWithLabel = { operation: Operation; label: string };
+
+const commitAmendOperation = (operation: CommitAmendOperation): Operation => ({
 	_tag: "CommitAmend",
 	...operation,
 });
 
-/** @public */
-export const commitCreateOperation = (operation: CommitCreateOperation): Operation => ({
+const commitCreateOperation = (operation: CommitCreateOperation): Operation => ({
 	_tag: "CommitCreate",
 	...operation,
 });
 
-/** @public */
-export const commitSplitOperation = (operation: CommitSplitOperation): Operation => ({
+const commitSplitOperation = (operation: CommitSplitOperation): Operation => ({
 	_tag: "CommitSplit",
 	...operation,
 });
 
-/** @public */
-export const commitMoveOperation = (operation: CommitMoveOperation): Operation => ({
+const commitMoveOperation = (operation: CommitMoveOperation): Operation => ({
 	_tag: "CommitMove",
 	...operation,
 });
 
-/** @public */
-export const commitMoveChangesBetweenOperation = (
+const commitMoveChangesBetweenOperation = (
 	operation: CommitMoveChangesBetweenOperation,
 ): Operation => ({
 	_tag: "CommitMoveChangesBetween",
 	...operation,
 });
 
-/** @public */
-export const commitSquashOperation = (operation: CommitSquashOperation): Operation => ({
+const commitSquashOperation = (operation: CommitSquashOperation): Operation => ({
 	_tag: "CommitSquash",
 	...operation,
 });
 
-/** @public */
-export const commitUncommitOperation = (operation: CommitUncommitOperation): Operation => ({
+const commitUncommitOperation = (operation: CommitUncommitOperation): Operation => ({
 	_tag: "CommitUncommit",
 	...operation,
 });
 
-/** @public */
-export const commitUncommitChangesOperation = (
-	operation: CommitUncommitChangesOperation,
-): Operation => ({
+const commitUncommitChangesOperation = (operation: CommitUncommitChangesOperation): Operation => ({
 	_tag: "CommitUncommitChanges",
 	...operation,
 });
 
-/** @public */
-export const moveBranchOperation = (operation: MoveBranchOperation): Operation => ({
+const moveBranchOperation = (operation: MoveBranchOperation): Operation => ({
 	_tag: "MoveBranch",
 	...operation,
 });
-
-/** @public */
-export const tearOffBranchOperation = (operation: TearOffBranchOperation): Operation => ({
-	_tag: "TearOffBranch",
-	...operation,
-});
-
-export const operationLabel = (operation: Operation): string =>
-	Match.value(operation).pipe(
-		Match.tagsExhaustive({
-			CommitAmend: () => "Amend",
-			CommitCreate: ({ side }) =>
-				Match.value(side).pipe(
-					Match.when("above", () => "Commit above"),
-					Match.when("below", () => "Commit below"),
-					Match.exhaustive,
-				),
-			CommitSplit: ({ side }) =>
-				Match.value(side).pipe(
-					Match.when("above", () => "Commit above"),
-					Match.when("below", () => "Commit below"),
-					Match.exhaustive,
-				),
-			CommitMove: ({ side }) =>
-				Match.value(side).pipe(
-					Match.when("above", () => "Move above"),
-					Match.when("below", () => "Move below"),
-					Match.exhaustive,
-				),
-			CommitMoveChangesBetween: () => "Amend",
-			CommitSquash: () => "Squash",
-			CommitUncommit: () => "Uncommit",
-			CommitUncommitChanges: () => "Uncommit",
-			MoveBranch: () => "Move above",
-			TearOffBranch: () => "Tear off branch",
-		}),
-	);
 
 const runOperation = async ({
 	projectId,
@@ -286,12 +217,6 @@ const runOperation = async ({
 					targetBranch: operation.targetBranch,
 					dryRun,
 				}),
-			TearOffBranch: (operation) =>
-				window.lite.tearOffBranch({
-					projectId,
-					subjectBranch: operation.subjectBranch,
-					dryRun,
-				}),
 		}),
 	);
 
@@ -304,7 +229,7 @@ export const useDryRunOperation = ({
 }) => {
 	const changes = useResolveDiffSpecs({
 		projectId,
-		operand: operation ? operation.source : undefined,
+		operand: operation && "source" in operation ? operation.source : undefined,
 	});
 
 	return useQuery({
@@ -385,69 +310,106 @@ const squashOperation = ({
 }: {
 	source: Operand;
 	target: Operand;
-}): Operation | null =>
+}): OperationWithLabel | null =>
 	Match.value({ source, sourceFileParent: operandFileParent(source), target }).pipe(
 		Match.when(
 			{
 				source: { _tag: "Commit" },
 				target: { _tag: "Commit" },
 			},
-			({ source, target }) =>
-				commitSquashOperation({
-					source,
+			({ source, target }): OperationWithLabel => ({
+				operation: commitSquashOperation({
 					sourceCommitIds: [source.commitId],
 					destinationCommitId: target.commitId,
 				}),
+				label: "Squash",
+			}),
 		),
 		Match.when(
 			{
 				source: { _tag: "Commit" },
 				target: { _tag: "ChangesSection" },
 			},
-			({ source }) =>
-				commitUncommitOperation({
-					source,
+			({ source }): OperationWithLabel => ({
+				operation: commitUncommitOperation({
 					subjectCommitIds: [source.commitId],
 					assignTo: null,
 				}),
+				label: "Uncommit",
+			}),
 		),
 		Match.when(
 			{
 				sourceFileParent: { _tag: "Changes" },
 				target: { _tag: "Commit" },
 			},
-			({ source, target }) =>
-				commitAmendOperation({
+			({ source, target }): OperationWithLabel => ({
+				operation: commitAmendOperation({
 					commitId: target.commitId,
 					source,
 				}),
+				label: "Amend",
+			}),
 		),
 		Match.when(
 			{
 				sourceFileParent: { _tag: "Commit" },
 				target: { _tag: "ChangesSection" },
 			},
-			({ source, sourceFileParent }) =>
-				commitUncommitChangesOperation({
+			({ source, sourceFileParent }): OperationWithLabel => ({
+				operation: commitUncommitChangesOperation({
 					commitId: sourceFileParent.commitId,
 					assignTo: null,
 					source,
 				}),
+				label: "Uncommit",
+			}),
 		),
 		Match.when(
 			{
 				sourceFileParent: { _tag: "Commit" },
 				target: { _tag: "Commit" },
 			},
-			({ source, sourceFileParent, target }) =>
-				commitMoveChangesBetweenOperation({
+			({ source, sourceFileParent, target }): OperationWithLabel => ({
+				operation: commitMoveChangesBetweenOperation({
 					sourceCommitId: sourceFileParent.commitId,
 					destinationCommitId: target.commitId,
 					source,
 				}),
+				label: "Amend",
+			}),
 		),
 		Match.orElse(() => null),
 	);
+
+const intoOperation = ({
+	source,
+	target,
+}: {
+	source: Operand;
+	target: Operand;
+}): OperationWithLabel | null => {
+	const squash = squashOperation({ source, target });
+	if (squash) return squash;
+
+	return Match.value({ source, target }).pipe(
+		Match.when(
+			{
+				source: { _tag: "Commit" },
+				target: { _tag: "Branch" },
+			},
+			({ source, target }): OperationWithLabel => ({
+				operation: commitMoveOperation({
+					subjectCommitIds: [source.commitId],
+					relativeTo: { type: "referenceBytes", subject: target.branchRef },
+					side: "below",
+				}),
+				label: "Move here",
+			}),
+		),
+		Match.orElse(() => null),
+	);
+};
 
 const moveOperation = ({
 	source,
@@ -457,7 +419,7 @@ const moveOperation = ({
 	source: Operand;
 	target: Operand;
 	side: InsertSide;
-}) => {
+}): OperationWithLabel | null => {
 	const branchMoveOperation = Match.value({ source, target, side }).pipe(
 		// This should support `relativeTo`:
 		// https://linear.app/gitbutler/issue/GB-1161/refsbranches-should-use-bytes-instead-of-strings
@@ -469,61 +431,93 @@ const moveOperation = ({
 				target: { _tag: "Branch" },
 				side: "above",
 			},
-			({ source, target }) =>
-				moveBranchOperation({
-					source,
-					subjectBranch: decodeRefName(source.branchRef),
-					targetBranch: decodeRefName(target.branchRef),
+			({ source, target }): OperationWithLabel => ({
+				operation: moveBranchOperation({
+					subjectBranch: decodeBytes(source.branchRef),
+					targetBranch: decodeBytes(target.branchRef),
 				}),
+				label: "Move above",
+			}),
 		),
 		Match.orElse(() => null),
 	);
 
 	if (branchMoveOperation) return branchMoveOperation;
 
-	const relativeTo: RelativeTo | null = Match.value(target).pipe(
-		Match.tags({
-			Commit: ({ commitId }): RelativeTo | null => ({ type: "commit", subject: commitId }),
-			Branch: ({ branchRef }): RelativeTo | null => ({
-				type: "referenceBytes",
-				subject: branchRef,
-			}),
-		}),
+	const relativeTo: RelativeTo | null = Match.value({ target, side }).pipe(
+		Match.when({ target: { _tag: "Commit" } }, ({ target }): RelativeTo | null => ({
+			type: "commit",
+			subject: target.commitId,
+		})),
+		Match.when(
+			{
+				target: { _tag: "Branch" },
+				// We use the branch operand as the source/target for the branch
+				// contents. However, `RelativeTo` is interpreted to mean just the
+				// branch reference rather than the branch bucket, meaning `side:
+				// "below"` won't work as expected.
+				side: "above",
+			},
+			({ target }): RelativeTo | null => ({ type: "referenceBytes", subject: target.branchRef }),
+		),
 		Match.orElse((): RelativeTo | null => null),
 	);
 
 	if (!relativeTo) return null;
 
 	return Match.value({ source, sourceFileParent: operandFileParent(source) }).pipe(
-		Match.when({ source: { _tag: "Commit" } }, ({ source }) =>
-			commitMoveOperation({
-				source,
-				subjectCommitIds: [source.commitId],
-				relativeTo,
-				side,
+		Match.when(
+			{ source: { _tag: "Commit" } },
+			({ source }): OperationWithLabel => ({
+				operation: commitMoveOperation({
+					subjectCommitIds: [source.commitId],
+					relativeTo,
+					side,
+				}),
+				label: Match.value(side).pipe(
+					Match.when("above", () => "Move above"),
+					Match.when("below", () => "Move below"),
+					Match.exhaustive,
+				),
 			}),
 		),
-		Match.when({ sourceFileParent: { _tag: "Changes" } }, ({ source }) =>
-			commitCreateOperation({
-				relativeTo,
-				side,
-				source,
-				message: "",
+		Match.when(
+			{ sourceFileParent: { _tag: "Changes" } },
+			({ source }): OperationWithLabel => ({
+				operation: commitCreateOperation({
+					relativeTo,
+					side,
+					source,
+					message: "",
+				}),
+				label: Match.value(side).pipe(
+					Match.when("above", () => "Commit above"),
+					Match.when("below", () => "Commit below"),
+					Match.exhaustive,
+				),
 			}),
 		),
-		Match.when({ sourceFileParent: { _tag: "Commit" } }, ({ source, sourceFileParent }) =>
-			commitSplitOperation({
-				sourceCommitId: sourceFileParent.commitId,
-				relativeTo,
-				side,
-				source,
+		Match.when(
+			{ sourceFileParent: { _tag: "Commit" } },
+			({ source, sourceFileParent }): OperationWithLabel => ({
+				operation: commitSplitOperation({
+					sourceCommitId: sourceFileParent.commitId,
+					relativeTo,
+					side,
+					source,
+				}),
+				label: Match.value(side).pipe(
+					Match.when("above", () => "Commit above"),
+					Match.when("below", () => "Commit below"),
+					Match.exhaustive,
+				),
 			}),
 		),
 		Match.orElse(() => null),
 	);
 };
 
-export type OperationType = "squash" | "moveAbove" | "moveBelow";
+export type OperationType = "into" | "above" | "below";
 
 const isOperationSourceEnabled = (source: Operand): boolean =>
 	Match.value(source).pipe(
@@ -531,19 +525,19 @@ const isOperationSourceEnabled = (source: Operand): boolean =>
 		Match.orElse(() => true),
 	);
 
-export type OperationsByType = Record<OperationType, Operation | null>;
+export type OperationsByType = Record<OperationType, OperationWithLabel | null>;
 
 export const getOperations = (source: Operand, target: Operand): OperationsByType => {
 	if (operandEquals(source, target) || !isOperationSourceEnabled(source))
 		return {
-			squash: null,
-			moveAbove: null,
-			moveBelow: null,
+			into: null,
+			above: null,
+			below: null,
 		};
 	return {
-		squash: squashOperation({ source, target }),
-		moveAbove: moveOperation({ source, target, side: "above" }),
-		moveBelow: moveOperation({ source, target, side: "below" }),
+		into: intoOperation({ source, target }),
+		above: moveOperation({ source, target, side: "above" }),
+		below: moveOperation({ source, target, side: "below" }),
 	};
 };
 
@@ -551,12 +545,12 @@ export const getOperation = (x: {
 	source: Operand;
 	target: Operand;
 	operationType: OperationType;
-}): Operation | null => {
-	const { squash, moveAbove, moveBelow } = getOperations(x.source, x.target);
+}): OperationWithLabel | null => {
+	const { into, above, below } = getOperations(x.source, x.target);
 	return Match.value(x.operationType).pipe(
-		Match.when("squash", () => squash),
-		Match.when("moveAbove", () => moveAbove),
-		Match.when("moveBelow", () => moveBelow),
+		Match.when("into", () => into),
+		Match.when("above", () => above),
+		Match.when("below", () => below),
 		Match.exhaustive,
 	);
 };

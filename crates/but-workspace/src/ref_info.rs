@@ -28,6 +28,8 @@ pub struct Commit {
     pub message: BString,
     /// The signature at which the commit was authored.
     pub author: gix::actor::Signature,
+    /// The signature at which the commit was committed.
+    pub committer: gix::actor::Signature,
     /// The references pointing to this commit, even after dereferencing tag objects, along with workspace information.
     /// These can be names of tags and branches.
     pub refs: Vec<but_graph::RefInfo>,
@@ -70,7 +72,10 @@ impl From<but_core::Commit<'_>> for Commit {
         let tree_id = value.tree;
         let parent_ids = value.parents.iter().cloned().collect();
         let gix::objs::Commit {
-            message, author, ..
+            message,
+            author,
+            committer,
+            ..
         } = value.inner;
         let message = but_core::commit::strip_conflict_markers(message.as_ref());
         Commit {
@@ -79,6 +84,7 @@ impl From<but_core::Commit<'_>> for Commit {
             parent_ids,
             message,
             author,
+            committer,
             has_conflicts,
             change_id,
             refs: Vec::new(),
@@ -113,6 +119,10 @@ impl Commit {
             has_conflicts,
             author: commit
                 .author
+                .to_ref(&mut gix::date::parse::TimeBuf::default())
+                .into(),
+            committer: commit
+                .committer
                 .to_ref(&mut gix::date::parse::TimeBuf::default())
                 .into(),
             refs: graph_commit.refs.clone(),
@@ -268,6 +278,8 @@ impl std::fmt::Debug for GerritMode<'_> {
 /// Options for the [`ref_info()`](crate::ref_info()) call.
 #[derive(Default, Debug)]
 pub struct Options<'db> {
+    /// Project-scoped metadata used to resolve target refs and push remotes.
+    pub project_meta: but_core::ref_metadata::ProjectMeta,
     /// Control how to traverse the commit-graph as the basis for the workspace conversion.
     pub traversal: but_graph::init::Options,
     /// Perform expensive computations on a per-commit basis.
@@ -436,7 +448,12 @@ pub fn head_info_and_workspace(
     meta: &impl but_core::RefMetadata,
     opts: Options<'_>,
 ) -> anyhow::Result<(RefInfo, but_graph::Workspace)> {
-    let graph = Graph::from_head(repo, meta, opts.traversal.clone())?;
+    let graph = Graph::from_head(
+        repo,
+        meta,
+        opts.project_meta.clone(),
+        opts.traversal.clone(),
+    )?;
     let ws = graph.into_workspace()?;
     Ok((graph_to_ref_info(&ws, repo, opts)?, ws))
 }
@@ -457,8 +474,13 @@ pub fn ref_info(
 ) -> anyhow::Result<RefInfo> {
     let id = existing_ref.peel_to_id()?;
     let repo = id.repo;
-    let graph =
-        Graph::from_commit_traversal(id, existing_ref.inner.name, meta, opts.traversal.clone())?;
+    let graph = Graph::from_commit_traversal(
+        id,
+        existing_ref.inner.name,
+        meta,
+        opts.project_meta.clone(),
+        opts.traversal.clone(),
+    )?;
     graph_to_ref_info(&graph.into_workspace()?, repo, opts)
 }
 

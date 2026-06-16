@@ -1,4 +1,5 @@
 mod changes_in_branch {
+    use but_core::RefMetadata;
     use but_graph::init::Options;
     use but_testsupport::visualize_commit_graph_all;
     use but_workspace::ui;
@@ -16,7 +17,13 @@ mod changes_in_branch {
         * c166d42 (origin/main, origin/HEAD, main) init-integration
         ");
 
-        let graph = but_graph::Graph::from_head(&repo, &*meta, Options::limited())?;
+        let graph = but_graph::Graph::from_head(
+            &repo,
+            &*meta,
+            meta.workspace(but_core::WORKSPACE_REF_NAME.try_into()?)?
+                .project_meta(),
+            Options::limited(),
+        )?;
         let ws = graph.into_workspace()?;
 
         insta::assert_debug_snapshot!(ui::diff::changes_in_branch(&repo, &ws, r("refs/heads/A"))?, @r#"
@@ -137,8 +144,17 @@ mod changes_in_branch {
             "passing strange ref-names still causes an error - they must exist"
         );
 
-        let mut ref_info: ui::RefInfo =
-            but_workspace::head_info(&repo, &*meta, Default::default())?.try_into()?;
+        let mut ref_info: ui::RefInfo = but_workspace::head_info(
+            &repo,
+            &*meta,
+            but_workspace::ref_info::Options {
+                project_meta: meta
+                    .workspace(but_core::WORKSPACE_REF_NAME.try_into()?)?
+                    .project_meta(),
+                ..Default::default()
+            },
+        )?
+        .try_into()?;
         ref_info = ref_info.pruned_to_entrypoint();
         insta::assert_json_snapshot!(&ref_info, @r#"
         {
@@ -239,7 +255,8 @@ mod changes_in_branch {
                         "type": "LocalAndRemote",
                         "subject": "d79bba960b112dbd25d45921c47eeda22288022b"
                       },
-                      "createdAt": 946684800000,
+                      "authoredAt": 946684800000,
+                      "committedAt": 946771200000,
                       "author": {
                         "name": "author",
                         "email": "author@example.com",
@@ -253,7 +270,8 @@ mod changes_in_branch {
                     {
                       "id": "89cc2d303514654e9cab2d05b9af08b420a740c1",
                       "message": "change in A\n",
-                      "createdAt": 946684800000,
+                      "authoredAt": 946684800000,
+                      "committedAt": 946771200000,
                       "author": {
                         "name": "author",
                         "email": "author@example.com",
@@ -424,7 +442,8 @@ mod changes_in_branch {
                         "type": "LocalAndRemote",
                         "subject": "d79bba960b112dbd25d45921c47eeda22288022b"
                       },
-                      "createdAt": 946684800000,
+                      "authoredAt": 946684800000,
+                      "committedAt": 946771200000,
                       "author": {
                         "name": "author",
                         "email": "author@example.com",
@@ -438,7 +457,8 @@ mod changes_in_branch {
                     {
                       "id": "89cc2d303514654e9cab2d05b9af08b420a740c1",
                       "message": "change in A\n",
-                      "createdAt": 946684800000,
+                      "authoredAt": 946684800000,
+                      "committedAt": 946771200000,
                       "author": {
                         "name": "author",
                         "email": "author@example.com",

@@ -9,9 +9,9 @@ use crate::{
         FilesStatusFlag, StatusOutputLine,
         output::StatusOutputLineData,
         tui::{
-            CommitSource, Mode, MoveSource, SelectAfterReload,
+            CommitSource, Mode, MoveSource, NormalMode, PickUncommittedMode, SelectAfterReload,
             marking::{MarkClasses, Markable, Marks},
-            render::{commit_operation_display, move_operation_display},
+            render::{commit_operation_display, move_operation_display, stack_operation_display},
         },
     },
 };
@@ -648,10 +648,12 @@ fn is_discard_commit_boundary(line: &StatusOutputLine) -> bool {
 fn is_section_header(line: &StatusOutputLine, mode: &Mode) -> bool {
     match mode {
         Mode::Normal(..)
+        | Mode::PickChanges(..)
         | Mode::InlineReword(..)
         | Mode::Command(..)
         | Mode::Commit(..)
         | Mode::Move(..)
+        | Mode::Stack(..)
         | Mode::Details(..) => {
             matches!(
                 line.data,
@@ -802,34 +804,48 @@ pub(super) fn is_selectable_in_mode(
                 return true;
             }
         }
-        Mode::Command(..) | Mode::InlineReword(..) | Mode::Normal(..) | Mode::Details(..) => {}
+        Mode::Command(..)
+        | Mode::InlineReword(..)
+        | Mode::Normal(..)
+        | Mode::PickChanges(..)
+        | Mode::Details(..)
+        | Mode::Stack(..) => {}
     }
 
     // don't allow mixing marks
-    if let Mode::Normal(normal_mode) = mode
-        && !normal_mode.marks.is_empty()
-    {
-        let MarkClasses {
-            marked_commits,
-            marked_uncommitted,
-        } = normal_mode.marks.classify();
-        if marked_commits
-            && !matches!(
-                &line.data,
-                StatusOutputLineData::Branch { .. } | StatusOutputLineData::Commit { .. }
-            )
-        {
-            return false;
+    match mode {
+        Mode::Normal(NormalMode { marks }) | Mode::PickChanges(PickUncommittedMode { marks }) => {
+            if !marks.is_empty() {
+                let MarkClasses {
+                    marked_commits,
+                    marked_uncommitted,
+                } = marks.classify();
+                if marked_commits
+                    && !matches!(
+                        &line.data,
+                        StatusOutputLineData::Branch { .. } | StatusOutputLineData::Commit { .. }
+                    )
+                {
+                    return false;
+                }
+                if marked_uncommitted
+                    && !matches!(
+                        &line.data,
+                        StatusOutputLineData::UnassignedChanges { .. }
+                            | StatusOutputLineData::UnassignedFile { .. },
+                    )
+                {
+                    return false;
+                }
+            }
         }
-        if marked_uncommitted
-            && !matches!(
-                &line.data,
-                StatusOutputLineData::UnassignedChanges { .. }
-                    | StatusOutputLineData::UnassignedFile { .. },
-            )
-        {
-            return false;
-        }
+        Mode::Rub(..)
+        | Mode::InlineReword(..)
+        | Mode::Command(..)
+        | Mode::Commit(..)
+        | Mode::Move(..)
+        | Mode::Details(..)
+        | Mode::Stack(..) => {}
     }
 
     match mode {
@@ -851,6 +867,21 @@ pub(super) fn is_selectable_in_mode(
             .is_some_and(|cli_id| rub_mode.available_targets.contains(cli_id)),
         Mode::Commit(commit_mode) => commit_operation_display(&line.data, commit_mode).is_some(),
         Mode::Move(move_mode) => move_operation_display(&line.data, move_mode).is_some(),
+        Mode::Stack(stack_mode) => stack_operation_display(&line.data, stack_mode).is_some(),
+        Mode::PickChanges(..) => {
+            if let Some(cli_id) = line.data.cli_id() {
+                match &**cli_id {
+                    CliId::Uncommitted(..) | CliId::Unassigned { .. } => true,
+                    CliId::PathPrefix { .. }
+                    | CliId::CommittedFile { .. }
+                    | CliId::Branch { .. }
+                    | CliId::Commit { .. }
+                    | CliId::Stack { .. } => false,
+                }
+            } else {
+                false
+            }
+        }
         Mode::InlineReword(..) | Mode::Command(..) => {
             // you can't actually move the selection in these modes
             // but returning `false` would dim every line which hurts UX

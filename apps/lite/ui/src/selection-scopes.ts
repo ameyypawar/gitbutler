@@ -1,10 +1,11 @@
 import { selectionOperationHotkeys, type CommandGroup } from "#ui/hotkeys.ts";
 import { type OperationType } from "#ui/operations/operation.ts";
 import { keyboardTransferOperationMode } from "#ui/outline/mode.ts";
-import { fileOperand, operandIdentityKey, type FileOperand, type Operand } from "#ui/operands.ts";
+import { hunkOperand, HunkOperand, operandIdentityKey, type Operand } from "#ui/operands.ts";
 import {
 	projectActions,
 	selectProjectOutlineModeState,
+	selectProjectSelectionDiff,
 	selectProjectSelectionFiles,
 	selectProjectSelectionOutline,
 } from "#ui/projects/state.ts";
@@ -15,6 +16,7 @@ import {
 	type NavigationIndex,
 } from "#ui/workspace/navigation-index.ts";
 import { useHotkeySequences, useHotkeys } from "@tanstack/react-hotkeys";
+import { identity } from "effect";
 
 export type SelectionScope = "outline" | "files" | "diff";
 const allSelectionScopes: Array<SelectionScope> = ["outline", "files", "diff"];
@@ -76,15 +78,9 @@ export const resolveNavigationIndexSelection = <T>(
 		? selection
 		: (navigationIndex.items[0] ?? null);
 
-const fileOperandIdentityKey = (operand: FileOperand): string =>
-	operandIdentityKey(fileOperand(operand));
-
-export const useFilesSelection = (
-	projectId: string,
-	navigationIndex: NavigationIndex<FileOperand>,
-) => {
+export const useFilesSelection = (projectId: string, navigationIndex: NavigationIndex<string>) => {
 	const selection = useAppSelector((state) => selectProjectSelectionFiles(state, projectId));
-	return resolveNavigationIndexSelection(navigationIndex, selection, fileOperandIdentityKey);
+	return resolveNavigationIndexSelection(navigationIndex, selection, identity);
 };
 
 export const useOutlineSelection = ({
@@ -96,6 +92,17 @@ export const useOutlineSelection = ({
 }) => {
 	const selectionState = useAppSelector((state) => selectProjectSelectionOutline(state, projectId));
 	return resolveNavigationIndexSelection(navigationIndex, selectionState, operandIdentityKey);
+};
+
+const hunkOperandIdentityKey = (operand: HunkOperand): string =>
+	operandIdentityKey(hunkOperand(operand));
+
+export const useDiffSelection = (
+	projectId: string,
+	navigationIndex: NavigationIndex<HunkOperand>,
+) => {
+	const selection = useAppSelector((state) => selectProjectSelectionDiff(state, projectId));
+	return resolveNavigationIndexSelection(navigationIndex, selection, hunkOperandIdentityKey);
 };
 
 export const useNavigationIndexHotkeys = <T>({
@@ -321,7 +328,13 @@ export const useNavigationIndexHotkeys = <T>({
 
 	const outlineMode = useAppSelector((state) => selectProjectOutlineModeState(state, projectId));
 
-	const enterTransferMode = (source: Operand, operationType: OperationType) => {
+	const operationEnabled = outlineMode._tag === "Default" && selection !== null;
+
+	const enterTransferModeForSelection = (operationType: OperationType) => {
+		if (selection === null) return;
+
+		const source = operationSourceForItem(selection);
+
 		dispatch(
 			projectActions.enterTransferMode({
 				projectId,
@@ -334,18 +347,10 @@ export const useNavigationIndexHotkeys = <T>({
 		focusSelectionScope("outline");
 	};
 
-	const operationEnabled = outlineMode._tag === "Default" && selection !== null;
-
-	const enterTransferModeForSelection = (operationType: OperationType) => {
-		if (selection === null) return;
-
-		enterTransferMode(operationSourceForItem(selection), operationType);
-	};
-
 	useHotkeys([
 		{
 			hotkey: selectionOperationHotkeys.move.hotkey,
-			callback: () => enterTransferModeForSelection("moveAbove"),
+			callback: () => enterTransferModeForSelection("above"),
 			options: {
 				conflictBehavior: "allow",
 				enabled: operationEnabled,
@@ -355,7 +360,7 @@ export const useNavigationIndexHotkeys = <T>({
 		},
 		{
 			hotkey: selectionOperationHotkeys.cut.hotkey,
-			callback: () => enterTransferModeForSelection("squash"),
+			callback: () => enterTransferModeForSelection("into"),
 			options: {
 				conflictBehavior: "allow",
 				enabled: operationEnabled,
@@ -366,7 +371,7 @@ export const useNavigationIndexHotkeys = <T>({
 		},
 		{
 			hotkey: selectionOperationHotkeys.squash.hotkey,
-			callback: () => enterTransferModeForSelection("squash"),
+			callback: () => enterTransferModeForSelection("into"),
 			options: {
 				conflictBehavior: "allow",
 				enabled: operationEnabled,

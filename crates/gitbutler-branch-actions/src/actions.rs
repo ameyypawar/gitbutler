@@ -54,7 +54,7 @@ pub fn set_base_branch(
     base::set_base_branch(ctx, perm.read_permission(), target_branch)
 }
 
-pub fn set_target_push_remote(ctx: &Context, push_remote: &str) -> Result<()> {
+pub fn set_target_push_remote(ctx: &mut Context, push_remote: &str) -> Result<()> {
     base::set_target_push_remote(ctx, push_remote)
 }
 
@@ -142,15 +142,23 @@ pub fn upstream_integration_statuses(
     review_map: &std::collections::HashMap<String, but_forge::ForgeReview>,
 ) -> Result<StackStatuses> {
     let mut guard = ctx.exclusive_worktree_access();
-
-    let repo = ctx.repo.get()?;
-    let context = UpstreamIntegrationContext::open(
+    upstream_integration_statuses_with_perm(
         ctx,
         target_commit_oid,
-        guard.write_permission(),
-        &repo,
         review_map,
-    )?;
+        guard.write_permission(),
+    )
+}
+
+pub fn upstream_integration_statuses_with_perm(
+    ctx: &mut Context,
+    target_commit_oid: Option<gix::ObjectId>,
+    review_map: &std::collections::HashMap<String, but_forge::ForgeReview>,
+    perm: &mut RepoExclusive,
+) -> Result<StackStatuses> {
+    let repo = ctx.repo.get()?;
+    let context =
+        UpstreamIntegrationContext::open(ctx, target_commit_oid, perm, &repo, review_map)?;
 
     upstream_integration::upstream_integration_statuses(&context)
 }

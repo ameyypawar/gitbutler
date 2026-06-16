@@ -9,6 +9,7 @@ use but_core::{
 };
 use but_ctx::Context;
 use but_oplog::legacy::{OperationKind, SnapshotDetails, Trailer};
+use but_workspace::ui::ref_info::BranchReference;
 use gitbutler_branch_actions::stack::CreateSeriesRequest;
 use gitbutler_git::PushResult;
 use gitbutler_oplog::SnapshotExt;
@@ -36,6 +37,12 @@ pub mod create_reference {
             commit_id: HexHash,
             position: but_workspace::branch::create_reference::Position,
         },
+        AtSegment {
+            short_name: String,
+            position: but_workspace::branch::create_reference::Position,
+        },
+        /// Unlike `AtSegment`, the new reference always points at the same commit
+        /// as the anchor reference - `position` only determines their ordering.
         AtReference {
             short_name: String,
             position: but_workspace::branch::create_reference::Position,
@@ -92,10 +99,21 @@ pub fn create_reference_with_perm(
                     commit_id: commit_id.into(),
                     position,
                 },
-                create_reference::Anchor::AtReference {
+                create_reference::Anchor::AtSegment {
                     short_name,
                     position,
                 } => but_workspace::branch::create_reference::Anchor::AtSegment {
+                    ref_name: Cow::Owned(
+                        Category::LocalBranch
+                            .to_full_name(short_name.as_str())
+                            .map_err(anyhow::Error::from)?,
+                    ),
+                    position,
+                },
+                create_reference::Anchor::AtReference {
+                    short_name,
+                    position,
+                } => but_workspace::branch::create_reference::Anchor::AtReference {
                     ref_name: Cow::Owned(
                         Category::LocalBranch
                             .to_full_name(short_name.as_str())
@@ -282,7 +300,7 @@ pub fn update_branch_name(
     stack_id: StackId,
     branch_name: String,
     new_name: String,
-) -> Result<()> {
+) -> Result<BranchReference> {
     let mut guard = ctx.exclusive_worktree_access();
     update_branch_name_with_perm(
         ctx,
@@ -290,8 +308,7 @@ pub fn update_branch_name(
         branch_name,
         new_name,
         guard.write_permission(),
-    )?;
-    Ok(())
+    )
 }
 
 /// Apply the rename from `branch_name` to `new_name` in the stack identified by
@@ -305,15 +322,18 @@ pub fn update_branch_name_with_perm(
     branch_name: String,
     new_name: String,
     perm: &mut RepoExclusive,
-) -> Result<()> {
-    gitbutler_branch_actions::stack::update_branch_name_with_perm(
+) -> Result<BranchReference> {
+    let normalized_name = gitbutler_branch_actions::stack::update_branch_name_with_perm(
         ctx,
         stack_id,
         branch_name,
         new_name,
         perm,
     )?;
-    Ok(())
+    let full_name = Category::LocalBranch
+        .to_full_name(normalized_name.as_str())
+        .map_err(anyhow::Error::from)?;
+    Ok(full_name.into())
 }
 
 #[but_api]

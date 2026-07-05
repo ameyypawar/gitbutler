@@ -37,7 +37,7 @@ fn determine_forge_from_host(host: &str) -> Option<ForgeName> {
 
 /// Derive the forge repository information from a remote URL.
 ///
-/// The forge type is resolved by [`resolve_forge_name`]: the URL host first,
+/// The forge type is resolved by `resolve_forge_name`: the URL host first,
 /// then a match against configured accounts' custom hosts, and finally the
 /// project's `override_forge` (from its stored `forge_override`) as a last
 /// resort. Pass `None` for `override_forge` when no project preference applies,

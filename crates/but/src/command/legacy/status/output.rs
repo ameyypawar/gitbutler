@@ -133,13 +133,13 @@ impl StatusOutput<'_> {
         &mut self,
         connector: Vec<Span<'static>>,
         line: BranchLineContent,
-        id: CliId,
+        id: Option<CliId>,
     ) -> anyhow::Result<()> {
         self.push_line(
             Some(connector),
             StatusOutputContent::Branch(line),
             StatusOutputLineData::Branch {
-                cli_id: Arc::new(id),
+                cli_id: id.map(Arc::new),
             },
         )
     }
@@ -391,7 +391,9 @@ pub(super) enum StatusOutputLineData {
         cli_id: Arc<CliId>,
     },
     Branch {
-        cli_id: Arc<CliId>,
+        /// `None` for an anonymous segment - a `gitbutler/workspace` merge-commit
+        /// parent that no stack head claims, so it has no CLI id (#14497).
+        cli_id: Option<Arc<CliId>>,
     },
     Commit {
         cli_id: Arc<CliId>,
@@ -413,9 +415,10 @@ pub(super) enum StatusOutputLineData {
 impl StatusOutputLineData {
     pub(super) fn cli_id(&self) -> Option<&Arc<CliId>> {
         match self {
+            // An anonymous segment carries no CLI id (#14497).
+            StatusOutputLineData::Branch { cli_id } => cli_id.as_ref(),
             StatusOutputLineData::UncommittedChanges { cli_id }
             | StatusOutputLineData::UncommittedFile { cli_id }
-            | StatusOutputLineData::Branch { cli_id }
             | StatusOutputLineData::StagedChanges { cli_id }
             | StatusOutputLineData::StagedFile { cli_id }
             | StatusOutputLineData::Commit { cli_id, .. }

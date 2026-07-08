@@ -381,7 +381,7 @@ fn row_stack_ids(lines: &[StatusOutputLine]) -> Vec<Option<StackId>> {
         .iter()
         .map(|line| match &line.data {
             StatusOutputLineData::Branch { cli_id } => {
-                let stack_id = stack_id_from_cli_id(cli_id.as_ref());
+                let stack_id = cli_id.as_ref().and_then(|c| stack_id_from_cli_id(c));
                 current_stack_id = stack_id;
                 stack_id
             }
@@ -756,7 +756,10 @@ fn selected_operation_extension<'a>(
                     mode,
                     direction: mode.insert_side.into(),
                 })
-            } else if let StatusOutputLineData::Branch { cli_id: target, .. } = data
+            } else if let StatusOutputLineData::Branch {
+                cli_id: Some(target),
+                ..
+            } = data
                 && !mode.source.contains(target)
             {
                 let source_is_commit = match &*mode.source {
@@ -1036,17 +1039,21 @@ pub fn commit_operation_display(
     } = mode;
 
     match data {
-        StatusOutputLineData::Branch { cli_id } => {
-            if let Some(stack_scope) = scope_to_stack
-                && let Some(stack_id) = cli_id.stack_id()
-                && *stack_scope != stack_id
-            {
-                // don't allow selecting branches outside the scoped stack
-                None
-            } else {
-                Some("commit to branch")
+        StatusOutputLineData::Branch { cli_id } => match cli_id {
+            // An anonymous segment (no CLI id) is not a commit target (#14497).
+            None => None,
+            Some(cli_id) => {
+                if let Some(stack_scope) = scope_to_stack
+                    && let Some(stack_id) = cli_id.stack_id()
+                    && *stack_scope != stack_id
+                {
+                    // don't allow selecting branches outside the scoped stack
+                    None
+                } else {
+                    Some("commit to branch")
+                }
             }
-        }
+        },
         StatusOutputLineData::Commit { stack_id, .. } => {
             if let Some(stack_scope) = scope_to_stack
                 && Some(*stack_scope) != *stack_id
@@ -1193,6 +1200,9 @@ pub fn stack_operation_display(
     let StackMode { stack_heads } = mode;
     match data {
         StatusOutputLineData::Branch { cli_id } => {
+            let Some(cli_id) = cli_id else {
+                return None;
+            };
             let CliId::Branch { name, .. } = &**cli_id else {
                 return None;
             };

@@ -1233,33 +1233,55 @@ fn print_group(
                 .unwrap_or_default();
 
             let branch = segment.branch_name().unwrap_or(BStr::new("")).to_string();
-            let branch_cli_id = lookup_cli_id_for_short_id(
-                &status_ctx.id_map,
-                &repo,
-                &segment.short_id,
-                |id| matches!(id, CliId::Branch { .. }),
-                "branch",
-            )?;
+            // An anonymous segment - e.g. a `gitbutler/workspace` merge-commit
+            // parent whose branch was deleted or unapplied - has no name and no
+            // CLI id, so it isn't in the IdMap. Tolerate it here instead of
+            // throwing "Could not find branch CLI id '' in IdMap", which used to
+            // wedge `status` and every workspace mutation that enumerates it
+            // first (#14497).
+            // The branch CliId is its name, so a nameless segment gets no short
+            // id assigned (see `populate_branch_short_ids`) and isn't in the
+            // IdMap. Detect anonymity directly rather than via the empty id.
+            let is_anonymous = segment.branch_name().is_none();
+            let branch_cli_id = if is_anonymous {
+                None
+            } else {
+                Some(lookup_cli_id_for_short_id(
+                    &status_ctx.id_map,
+                    &repo,
+                    &segment.short_id,
+                    |id| matches!(id, CliId::Branch { .. }),
+                    "branch",
+                )?)
+            };
             let mut branch_suffix = Vec::new();
             branch_suffix.extend(ci_spans);
             if let Some(branch_status) = branch_status {
                 branch_suffix.push(branch_status);
             }
             branch_suffix.extend(review_spans);
+            if is_anonymous {
+                branch_suffix.push(Span::styled(
+                    " (unnamed - run `git branch <name> <commit>` to recover)",
+                    t.hint,
+                ));
+            }
             if !no_commits.is_empty() {
                 branch_suffix.push(Span::raw(" "));
                 branch_suffix.push(Span::styled(no_commits, t.hint));
             }
 
+            let branch_name = if is_anonymous {
+                Vec::from([Span::styled("unnamed segment", t.hint)])
+            } else {
+                Vec::from([Span::styled(branch, t.local_branch), Span::raw(workspace)])
+            };
             output.branch(
                 Vec::from([Span::raw(format!("┊{notch}┄"))]),
                 BranchLineContent {
                     id: Vec::from([Span::styled(segment.short_id.clone(), t.cli_id)]),
                     decoration_start: Vec::from([Span::raw(" [")]),
-                    branch_name: Vec::from([
-                        Span::styled(branch, t.local_branch),
-                        Span::raw(workspace),
-                    ]),
+                    branch_name,
                     decoration_end: Vec::from([Span::raw("]")]),
                     suffix: branch_suffix,
                 },

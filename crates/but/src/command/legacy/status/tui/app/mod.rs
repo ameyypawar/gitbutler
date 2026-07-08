@@ -794,6 +794,10 @@ impl App {
 
         match &selection.data {
             StatusOutputLineData::Branch { cli_id } => {
+                // An anonymous segment has no CLI id, so there's nothing to act on (#14497).
+                let Some(cli_id) = cli_id else {
+                    return Ok(());
+                };
                 let CliId::Branch { name, .. } = &**cli_id else {
                     return Ok(());
                 };
@@ -849,6 +853,10 @@ impl App {
 
         let new_name = match &selection.data {
             StatusOutputLineData::Branch { cli_id } => {
+                // An anonymous segment has no CLI id, so there's nothing to act on (#14497).
+                let Some(cli_id) = cli_id else {
+                    return Ok(());
+                };
                 let CliId::Branch { name, .. } = &**cli_id else {
                     return Ok(());
                 };

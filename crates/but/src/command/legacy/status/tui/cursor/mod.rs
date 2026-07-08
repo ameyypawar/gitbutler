@@ -256,7 +256,10 @@ impl Cursor {
         }
 
         for line in lines.iter().take(self.0 + 1).rev() {
-            if let StatusOutputLineData::Branch { cli_id } = &line.data {
+            if let StatusOutputLineData::Branch {
+                cli_id: Some(cli_id),
+            } = &line.data
+            {
                 return Some(SelectAfterReload::CliId(Arc::clone(cli_id)));
             }
 

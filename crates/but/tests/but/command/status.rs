@@ -1159,3 +1159,49 @@ fn status_in_edit_mode_delegates_to_resolve_status() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn status_renders_anonymous_segment_after_branch_ref_deleted() {
+    // Regression for #14497: deleting an applied branch's git ref out from under
+    // GitButler leaves the `gitbutler/workspace` merge commit with a parent that
+    // no stack head claims - an anonymous segment with an empty CLI id. `but
+    // status` used to abort with "Could not find branch CLI id '' in IdMap",
+    // wedging the project (and every mutation that enumerates the workspace)
+    // with no in-product recovery. It must now render the unnamed segment.
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+
+    // Sanity: status works while the branch is named.
+    env.but("status").assert().success();
+
+    // Delete branch A's ref directly, as `git branch -D` would; the workspace
+    // merge commit still references A's tip as a now-orphaned parent.
+    let a_tip = env.invoke_git("rev-parse A");
+    env.invoke_git("branch -D A");
+
+    // Human status must render the unnamed segment, not throw the IdMap error.
+    let assert = env.but("status").assert().success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("unnamed segment"),
+        "status should render the anonymous segment, got:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("IdMap"),
+        "status must not throw the IdMap error, got:\n{stdout}"
+    );
+
+    // The JSON output must also succeed rather than wedging.
+    env.but("status --format json").assert().success();
+
+    // The recovery the hint advertises works: re-creating a branch at the
+    // orphan's tip re-binds the segment so it is named again (Byron's recovery,
+    // `git branch foo @~1`).
+    env.invoke_git(&format!("branch A {}", a_tip.trim()));
+    let recovered = env.but("status").assert().success();
+    let recovered = String::from_utf8_lossy(&recovered.get_output().stdout);
+    assert!(
+        !recovered.contains("unnamed segment"),
+        "re-creating the branch should re-bind the segment, got:\n{recovered}"
+    );
+}

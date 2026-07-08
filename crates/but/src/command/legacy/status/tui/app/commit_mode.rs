@@ -262,6 +262,10 @@ impl App {
                 }
             }
             StatusOutputLineData::Branch { cli_id, .. } => {
+                // An anonymous segment has no CLI id and isn't a commit target (#14497).
+                let Some(cli_id) = cli_id else {
+                    return Ok(());
+                };
                 let CliId::Branch { stack_id, .. } = &**cli_id else {
                     return Ok(());
                 };

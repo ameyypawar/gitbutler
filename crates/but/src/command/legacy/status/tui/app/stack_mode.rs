@@ -192,6 +192,7 @@ pub fn stack_ids_in_display_order(status_lines: &[StatusOutputLine]) -> Vec<Stac
     let mut stack_ids = Vec::new();
     for line in status_lines {
         if let StatusOutputLineData::Branch { cli_id, .. } = &line.data
+            && let Some(cli_id) = cli_id
             && let CliId::Branch {
                 stack_id: Some(stack_id),
                 ..
@@ -209,7 +210,10 @@ fn stack_id_for_line(
     status_lines: &[StatusOutputLine],
 ) -> Option<StackId> {
     match &line.data {
-        StatusOutputLineData::Branch { cli_id, .. }
+        StatusOutputLineData::Branch {
+            cli_id: Some(cli_id),
+            ..
+        }
         | StatusOutputLineData::StagedChanges { cli_id }
         | StatusOutputLineData::StagedFile { cli_id }
         | StatusOutputLineData::UncommittedFile { cli_id }
@@ -225,6 +229,8 @@ fn stack_id_for_line(
         | StatusOutputLineData::UpstreamChanges
         | StatusOutputLineData::Warning
         | StatusOutputLineData::Hint
+        // An anonymous segment has no CLI id, so no stack (#14497).
+        | StatusOutputLineData::Branch { cli_id: None, .. }
         | StatusOutputLineData::NoAssignmentsUnstaged => None,
     }
 }

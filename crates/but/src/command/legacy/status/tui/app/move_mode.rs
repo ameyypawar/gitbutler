@@ -186,7 +186,10 @@ impl App {
             }
         } else {
             match &selection.data {
-                StatusOutputLineData::Branch { cli_id, .. }
+                StatusOutputLineData::Branch {
+                    cli_id: Some(cli_id),
+                    ..
+                }
                 | StatusOutputLineData::Commit { cli_id, .. } => {
                     let Ok(source) = MoveSource::try_from(Arc::unwrap_or_clone(Arc::clone(cli_id)))
                     else {
@@ -211,6 +214,8 @@ impl App {
                 | StatusOutputLineData::UpstreamChanges
                 | StatusOutputLineData::Warning
                 | StatusOutputLineData::Hint
+                // An anonymous segment (no CLI id) is not a move source (#14497).
+                | StatusOutputLineData::Branch { cli_id: None, .. }
                 | StatusOutputLineData::NoAssignmentsUnstaged => return,
             }
         };
@@ -262,6 +267,10 @@ impl App {
 
         let target = match &selection.data {
             StatusOutputLineData::Branch { cli_id, .. } => {
+                // An anonymous segment (no CLI id) is not a move target (#14497).
+                let Some(cli_id) = cli_id else {
+                    return Ok(());
+                };
                 if let CliId::Branch { name, .. } = &**cli_id {
                     MoveTarget::Branch { name }
                 } else {

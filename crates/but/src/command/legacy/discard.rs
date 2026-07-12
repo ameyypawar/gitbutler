@@ -49,7 +49,19 @@ pub fn handle(ctx: &mut Context, out: &mut OutputChannel, id: &str) -> Result<()
                 CliId::UncommittedHunkOrFile(uncommitted) => {
                     builder.push_hunk_assignments(uncommitted.hunk_assignments)?;
                 }
-                CliId::PathPrefix { .. } => todo!(),
+                CliId::PathPrefix {
+                    hunk_assignments, ..
+                } => {
+                    // Discard every uncommitted hunk assignment the path prefix
+                    // resolved to, just like a single file or hunk. A bare prefix
+                    // resolves to unassigned hunks; `<stack>:<prefix>` to that
+                    // stack's.
+                    builder.push_hunk_assignments(
+                        hunk_assignments
+                            .into_iter()
+                            .map(|(_id, assignment)| assignment),
+                    )?;
+                }
                 CliId::Uncommitted { .. } => {
                     // Discard all uncommitted changes.
                     builder.push_hunk_assignments(worktree_changes.assignments.clone())?;

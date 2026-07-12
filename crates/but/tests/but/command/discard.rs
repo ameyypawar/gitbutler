@@ -41,6 +41,70 @@ fn discard_removes_selected_change() -> anyhow::Result<()> {
 }
 
 #[test]
+fn discard_by_path_prefix_removes_only_matching_files() -> anyhow::Result<()> {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+
+    env.file("path/to/first.txt", "first\n");
+    env.file("path/to/second.txt", "second\n");
+    env.file("path/other/third.txt", "third\n");
+
+    // Regression: `but discard <path-prefix>` resolves to `CliId::PathPrefix`, which
+    // used to hit an unimplemented `todo!()` and panic the CLI instead of discarding.
+    env.but("discard path/to/").assert().success();
+
+    let status = util::status_json(&env)?;
+    assert!(
+        find_uncommitted_cli_id(&status, "path/to/first").is_none(),
+        "file under the discarded prefix should be gone"
+    );
+    assert!(
+        find_uncommitted_cli_id(&status, "path/to/second").is_none(),
+        "second file under the discarded prefix should be gone"
+    );
+    assert!(
+        find_uncommitted_cli_id(&status, "path/other/third").is_some(),
+        "files outside the prefix must be left untouched"
+    );
+
+    assert!(!env.projects_root().join("path/to/first.txt").exists());
+    assert!(!env.projects_root().join("path/to/second.txt").exists());
+    assert!(
+        env.projects_root().join("path/other/third.txt").exists(),
+        "unrelated file must remain in the worktree"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn discard_bare_path_prefix_leaves_stack_assigned_changes() -> anyhow::Result<()> {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+
+    env.file("path/to/unassigned.txt", "u\n");
+    env.file("path/to/assigned.txt", "a\n");
+
+    // Assign one file under the prefix to stack A.
+    env.but("rub path/to/assigned.txt A").assert().success();
+
+    // A bare prefix resolves to unassigned hunks only, so this discards the
+    // unassigned file and leaves the stack-assigned one untouched.
+    env.but("discard path/to/").assert().success();
+
+    assert!(
+        !env.projects_root().join("path/to/unassigned.txt").exists(),
+        "unassigned file under the prefix should be discarded"
+    );
+    assert!(
+        env.projects_root().join("path/to/assigned.txt").exists(),
+        "stack-assigned file under the prefix must be left (bare prefix = unassigned only)"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn concurrent_discard_to_independent_files_succeeds() -> anyhow::Result<()> {
     let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
     env.setup_metadata(&["A"]);

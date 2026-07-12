@@ -28,38 +28,3 @@ pub fn raise_soft_limit() {
         Err(err) => tracing::warn!("could not raise the open-file soft limit: {err}"),
     }
 }
-
-#[cfg(all(test, unix))]
-mod tests {
-    use rlimit::Resource;
-
-    // We assert only the safety invariant (never lowers), not that the target
-    // is reached: the OS-permitted maximum is platform-specific and, on macOS,
-    // is `kern.maxfilesperproc` - which is well below `RLIM_INFINITY`, so the
-    // achieved soft limit can legitimately be below `TARGET_NOFILE` even when
-    // the reported hard limit is unlimited.
-    #[test]
-    fn raise_soft_limit_runs_and_never_lowers() {
-        let (soft_before, _hard) = Resource::NOFILE.get().expect("read NOFILE limit");
-
-        // The public helper is best-effort and must not panic.
-        super::raise_soft_limit();
-
-        let (soft_after, _hard) = Resource::NOFILE.get().expect("read NOFILE limit");
-        assert!(
-            soft_after >= soft_before,
-            "raise_soft_limit must never lower the limit: {soft_after} < {soft_before}"
-        );
-
-        // Asking for less than the current soft limit is a no-op - we only ever
-        // grow the descriptor table, never shrink it.
-        if soft_before > 1 {
-            let requested_lower =
-                rlimit::increase_nofile_limit(soft_before - 1).expect("increase_nofile_limit");
-            assert!(
-                requested_lower >= soft_before,
-                "requesting a lower target must not shrink the limit: {requested_lower} < {soft_before}"
-            );
-        }
-    }
-}

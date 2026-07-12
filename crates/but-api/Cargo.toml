@@ -165,5 +165,9 @@ snapbox.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["full"] }
 
+[target.'cfg(unix)'.dev-dependencies]
+# Used by tests/fd_limit.rs to read RLIMIT_NOFILE and assert the never-lowers invariant.
+rlimit = "0.10.2"
+
 [lints]
 workspace = true

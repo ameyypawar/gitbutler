@@ -198,11 +198,20 @@ impl Snapshot {
                 }
             }
 
+            // A single stack must never list the same branch name twice: that's
+            // always corruption (e.g. from a racy write, #13345), never a legitimate
+            // shared segment. Drop within-stack repeats unconditionally - ahead of the
+            // cross-stack `preserve_duplicate` carve-out below, which only makes sense
+            // for two *different* stacks resolving to the same projected segment.
+            let mut seen_in_this_stack = HashSet::<String>::new();
             let head_indices_to_remove: Vec<_> = stack
                 .heads
                 .iter()
                 .enumerate()
                 .filter_map(|(head_idx, head)| {
+                    if !seen_in_this_stack.insert(head.name.clone()) {
+                        return Some(head_idx);
+                    }
                     let projected_segment_id = projected_segment_ids
                         .as_ref()
                         .and_then(|ids| ids.get(&head.name).copied());
@@ -225,7 +234,7 @@ impl Snapshot {
             for head_idx in head_indices_to_remove.into_iter().rev() {
                 let head = stack.heads.remove(head_idx);
                 tracing::warn!(
-                    "Removed '{head_name}' from stack {stack_id} as it was already used in another stack",
+                    "Removed duplicate head '{head_name}' from stack {stack_id}",
                     head_name = head.name
                 );
                 changed = true;

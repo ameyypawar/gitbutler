@@ -1974,6 +1974,54 @@ fn preserves_duplicate_heads_if_they_map_to_the_same_workspace_segment() -> anyh
     Ok(())
 }
 
+#[test]
+fn removes_within_stack_duplicate_heads_even_when_mapped_to_a_segment() -> anyhow::Result<()> {
+    let repo = but_testsupport::read_only_in_memory_scenario("ws/multi-lane-with-shared-segment")?;
+    let (mut store, _tmp) = empty_vb_store_rw()?;
+    store.data_mut().default_target = Some(Target {
+        branch: RemoteRefname::new("origin", "main"),
+        remote_url: "https://example.com/example-org/example-repo".to_string(),
+        sha: gix::hash::Kind::Sha1.null(),
+        push_remote_name: Some("origin".into()),
+    });
+
+    // A single stack that lists "shared" twice - one of the corruption shapes in
+    // #13345. Even though "shared" maps to a real projected segment (which is what
+    // makes the cross-stack preserve carve-out fire), one stack must never repeat a
+    // branch.
+    let stack = LegacyStack::new_with_just_heads(
+        vec![
+            StackBranch::new_with_zero_head("shared".into(), None, None, false),
+            StackBranch::new_with_zero_head("shared".into(), None, None, false),
+            StackBranch::new_with_zero_head("A".into(), None, None, false),
+        ],
+        0,
+        true,
+    );
+    let stack_id = stack.id;
+    store.data_mut().branches.insert(stack_id, stack);
+    store.set_changed_to_necessitate_write();
+
+    let path = store.path().to_owned();
+    store.write_reconciled(&repo)?;
+
+    let store = VirtualBranchesTomlMetadata::from_path(path)?;
+    let shared_in_stack = store.data().branches.get(&stack_id).map(|stack| {
+        stack
+            .heads
+            .iter()
+            .filter(|head| head.name == "shared")
+            .count()
+    });
+    assert_eq!(
+        shared_in_stack,
+        Some(1),
+        "the stack must not keep the same branch twice, even when it maps to a projected segment",
+    );
+
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn falls_back_to_in_memory_db_when_persistent_db_open_fails() -> anyhow::Result<()> {

@@ -123,8 +123,7 @@ impl Mcp {
             ));
         }
 
-        let repo_path = PathBuf::from(request.current_working_directory.clone());
-        let project = Project::from_path(&repo_path).expect("Failed to create project from path");
+        let project = project_from_cwd(&request.current_working_directory)?;
         let settings = AppSettings::load_from_default_path_creating_without_customization()
             .map_err(|e| rmcp::ErrorData::internal_error(e.to_string(), None))?;
         let mut ctx = Context::new_from_legacy_project_and_settings(&project, settings)
@@ -159,6 +158,22 @@ impl Mcp {
     }
 }
 
+/// Open the GitButler project at the client-supplied working directory.
+///
+/// A `current_working_directory` that isn't a git repository (a plain
+/// directory, a non-existent path, or a bare repo) is a client error, so it is
+/// reported as an `invalid_request` — matching the other input validations in
+/// `gitbutler_update_branches_inner` — rather than panicking the request.
+fn project_from_cwd(current_working_directory: &str) -> Result<Project, rmcp::ErrorData> {
+    let repo_path = PathBuf::from(current_working_directory);
+    Project::from_path(&repo_path).map_err(|e| {
+        rmcp::ErrorData::invalid_request(
+            format!("current_working_directory {current_working_directory:?} is not a git repository: {e}"),
+            None,
+        )
+    })
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GitButlerUpdateBranchesRequest {
@@ -190,5 +205,23 @@ impl ServerHandler for Mcp {
             },
             protocol_version: ProtocolVersion::LATEST,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_from_cwd_errors_on_non_git_directory() {
+        // A real, empty directory that is not inside a git repository. The old
+        // code `.expect(...)`ed on `Project::from_path` here and panicked; it
+        // must now return a clean request error instead.
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let cwd = tmp.path().to_str().expect("temp path is valid UTF-8");
+
+        let err = project_from_cwd(cwd).expect_err("a non-git directory must be an error");
+
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_REQUEST);
     }
 }

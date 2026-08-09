@@ -2344,6 +2344,7 @@ For more information, try '--help'.
 /// Writes an executable `pre-commit` hook that runs `body`.
 #[cfg(unix)]
 fn write_pre_commit_hook(env: &Sandbox, body: &str) {
+    env.invoke_git("config core.hooksPath .git/hooks");
     env.invoke_bash(format!(
         "mkdir -p .git/hooks && printf '#!/bin/sh\\n{body}\\n' > .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit"
     ));
@@ -2402,11 +2403,127 @@ fn no_hooks_commits_past_a_failing_pre_commit_hook() {
     );
 }
 
+/// Writes an executable `commit-msg` hook that runs `body`.
+#[cfg(unix)]
+fn write_commit_msg_hook(env: &Sandbox, body: &str) {
+    env.invoke_git("config core.hooksPath .git/hooks");
+    env.invoke_bash(format!(
+        "mkdir -p .git/hooks && cat > .git/hooks/commit-msg <<'HOOK'\n#!/bin/sh\n{body}\nHOOK\nchmod +x .git/hooks/commit-msg"
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn commit_msg_hook_can_update_the_message() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+    write_commit_msg_hook(
+        &env,
+        "printf '\\n\\nGenerated-by: commit-msg hook\\n' >> \"$1\"",
+    );
+    env.file("file.txt", "Some text");
+
+    env.but("commit -m 'add file.txt'").assert().success();
+
+    snapbox::assert_data_eq!(
+        env.invoke_git("show -s --format=%B refs/heads/A"),
+        snapbox::str![[r#"
+add file.txt
+
+Generated-by: commit-msg hook
+"#]]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn commit_msg_hook_updates_a_message_from_the_editor() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+    write_commit_msg_hook(
+        &env,
+        "printf '\\n\\nGenerated-by: commit-msg hook\\n' >> \"$1\"",
+    );
+    env.file("editor.sh", "printf 'message from editor\\n' > \"$1\"\n");
+    let editor_command = format!("sh {}", env.projects_root().join("editor.sh").display());
+    env.file("file.txt", "Some text");
+
+    env.but("commit")
+        .env("GIT_EDITOR", editor_command)
+        .assert()
+        .success();
+
+    snapbox::assert_data_eq!(
+        env.invoke_git("show -s --format=%B refs/heads/A"),
+        snapbox::str![[r#"
+message from editor
+
+Generated-by: commit-msg hook
+"#]]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failing_commit_msg_hook_rolls_back_the_commit() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+    write_commit_msg_hook(&env, "echo 'message policy rejected it' >&2\nexit 1");
+    env.file("file.txt", "Some text");
+    let branch_before = env.invoke_git("rev-parse refs/heads/A");
+
+    env.but("commit -m 'add file.txt'")
+        .assert()
+        .failure()
+        .stderr_eq(snapbox::str![[r#"
+Error: commit-msg hook failed:
+message policy rejected it
+
+To bypass the hook, run: but commit --no-hooks
+
+"#]]);
+
+    assert_eq!(
+        env.invoke_git("rev-parse refs/heads/A"),
+        branch_before,
+        "a rejected message must not advance the branch"
+    );
+    assert!(
+        env.but("status")
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .windows(b"file.txt".len())
+            .any(|window| window == b"file.txt"),
+        "a rejected commit must leave its changes uncommitted"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn no_hooks_skips_commit_msg_hook() {
+    let env = Sandbox::init_scenario_with_target_and_default_settings("one-stack");
+    env.setup_metadata(&["A"]);
+    write_commit_msg_hook(&env, "echo ran > commit-msg-ran.txt\nexit 1");
+    env.file("file.txt", "Some text");
+
+    env.but("commit --no-hooks -m 'add file.txt'")
+        .assert()
+        .success();
+
+    assert!(
+        !env.projects_root().join("commit-msg-ran.txt").exists(),
+        "--no-hooks must skip commit-msg instead of ignoring its verdict"
+    );
+}
+
 /// A formatter-style hook: inserts a line in the middle of a file that is already tracked,
 /// shifting every line below it and so invalidating hunk headers computed before it ran.
 #[cfg(unix)]
 fn write_line_shifting_hook(env: &Sandbox) {
     // `sed -i` is spelled differently on BSD and GNU, so splice the line with head/tail instead.
+    env.invoke_git("config core.hooksPath .git/hooks");
     env.invoke_bash(
         "mkdir -p .git/hooks && cat > .git/hooks/pre-commit <<'HOOK'\n\
          #!/bin/sh\n\

@@ -45,6 +45,30 @@ pub enum MessageHookResult {
     Failure(ErrorData),
 }
 
+/// A prepared `commit-msg` hook runner that owns its repository handle.
+///
+/// Commit creation resolves editor input inside a workspace transaction. Owning the legacy
+/// repository handle here lets the hook run at that point without borrowing the transaction's
+/// [`Context`].
+pub struct CommitMsgHook {
+    repo: git2::Repository,
+    husky_search_paths: Option<&'static [&'static str]>,
+}
+
+impl CommitMsgHook {
+    pub fn from_context(ctx: &Context) -> Result<Self> {
+        let repo = git2::Repository::open(&ctx.gitdir)?;
+        Ok(Self {
+            repo,
+            husky_search_paths: husky_search_paths(ctx),
+        })
+    }
+
+    pub fn run(&self, message: String) -> Result<MessageHookResult> {
+        commit_msg_with_repo(&self.repo, self.husky_search_paths, message)
+    }
+}
+
 fn husky_search_paths(ctx: &Context) -> Option<&'static [&'static str]> {
     if ctx.legacy_project.husky_hooks_enabled {
         Some(&["../.husky"])
@@ -53,14 +77,19 @@ fn husky_search_paths(ctx: &Context) -> Option<&'static [&'static str]> {
     }
 }
 
-pub fn commit_msg(ctx: &Context, mut message: String) -> Result<MessageHookResult> {
-    let original_message = message.clone();
+pub fn commit_msg(ctx: &Context, message: String) -> Result<MessageHookResult> {
     #[expect(deprecated, reason = "libgit2 hook adapter boundary")]
-    match git2_hooks::hooks_commit_msg(
-        &*ctx.git2_repo.get()?,
-        husky_search_paths(ctx),
-        &mut message,
-    )? {
+    let repo = &*ctx.git2_repo.get()?;
+    commit_msg_with_repo(repo, husky_search_paths(ctx), message)
+}
+
+fn commit_msg_with_repo(
+    repo: &git2::Repository,
+    husky_search_paths: Option<&[&str]>,
+    mut message: String,
+) -> Result<MessageHookResult> {
+    let original_message = message.clone();
+    match git2_hooks::hooks_commit_msg(repo, husky_search_paths, &mut message)? {
         H::NoHookFound => Ok(MessageHookResult::NotConfigured),
         H::Run(HookRunResponse {
             stdout,

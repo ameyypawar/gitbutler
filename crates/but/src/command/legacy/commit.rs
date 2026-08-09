@@ -10,7 +10,7 @@ use but_rebase::graph_rebase::mutate::{InsertSide, RelativeTo};
 use but_transaction::{IntermediateCommitCreateResult, Transaction};
 use but_workspace::{RefInfo, branch::create_reference::Anchor, commit::ChangeSource};
 use gitbutler_oplog::entry::{OperationKind, SnapshotDetails};
-use gitbutler_repo::hooks::{ErrorData, HookResult};
+use gitbutler_repo::hooks::{CommitMsgHook, ErrorData, HookResult, MessageHookResult};
 use gix::bstr::{BString, ByteSlice};
 use gix::refs::FullName;
 use nonempty::NonEmpty;
@@ -306,6 +306,10 @@ pub fn run(
     }
 
     let rejection_target = commit_op.rejection_target();
+    let commit_msg_hook = run_hooks
+        .is_yes()
+        .then(|| CommitMsgHook::from_context(ctx))
+        .transpose()?;
     let snapshot_details = SnapshotDetails::new(OperationKind::CreateCommit);
     let ((new_commit, branch_name), _ws) = but_transaction::with_transaction_with_perm(
         ctx,
@@ -330,6 +334,10 @@ pub fn run(
                 new_commit.context("BUG: rejected_specs is empty yet nothing was committed")?;
 
             let reworded_commit = reword_op.execute(new_commit.into(), &mut tx)?;
+            let reworded_commit = match commit_msg_hook.as_ref() {
+                Some(hook) => run_commit_msg_hook(hook, reworded_commit, &mut tx)?,
+                None => reworded_commit,
+            };
 
             Ok(but_transaction::Commit((reworded_commit, branch_name)))
         },
@@ -490,6 +498,31 @@ fn run_post_commit_hook(ctx: &Context) {
         Err(err) => format!("{err:#}"),
     };
     tracing::warn!("post-commit hook failed: {error}");
+}
+
+/// Run `commit-msg` after the message source has been resolved but before the transaction is
+/// committed. A rejecting hook therefore rolls the entire commit operation back, while a hook
+/// that edits its message gets one final reword inside the same transaction.
+fn run_commit_msg_hook(
+    hook: &CommitMsgHook,
+    commit: CommitId,
+    tx: &mut Transaction<'_, '_, impl RefMetadata>,
+) -> anyhow::Result<CommitId> {
+    let message = tx
+        .repo()
+        .find_commit(commit.commit_id)?
+        .message_raw()?
+        .to_string();
+    match hook.run(message)? {
+        MessageHookResult::Success | MessageHookResult::NotConfigured => Ok(commit),
+        MessageHookResult::Message(message_data) => Ok(tx
+            .reword_commit(
+                commit.commit_id,
+                BString::from(message_data.message).as_ref(),
+            )?
+            .into()),
+        MessageHookResult::Failure(ErrorData { error }) => Err(hook_failed("commit-msg", error)),
+    }
 }
 
 fn hook_failed(name: &str, error: String) -> anyhow::Error {
